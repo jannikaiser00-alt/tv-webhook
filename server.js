@@ -1,54 +1,87 @@
+// server.js
 const express = require('express');
-const crypto = require('crypto');
-const morgan = require('morgan');
-
 const app = express();
-const PORT = process.env.PORT || 3000;
-const TV_SECRET = process.env.TV_SECRET || ''; // in Render -> Environment Variables
 
-// Roh-Body für Signaturprüfung puffern
-function rawBodySaver(req, res, buf) {
-  req.rawBody = buf;
-}
-app.use(express.json({ verify: rawBodySaver }));
-app.use(express.urlencoded({ extended: true, verify: rawBodySaver }));
-app.use(morgan('tiny'));
+app.use(express.json());
 
-// Optionale Signaturprüfung (TradingView Webhook Header)
-function verifySignature(req) {
-  if (!TV_SECRET) return true; // Secret nicht gesetzt -> keine Prüfung
-  const sig =
-    req.get('X-TRADINGVIEW-SIGNATURE') ||
-    req.get('X-Signature') ||
-    '';
-  if (!sig || !req.rawBody) return false;
+// ---- Konfiguration / Secret laden (leerzeichen sicher entfernen)
+const TV_SECRET = (process.env.TV_SECRET || '').trim();
 
-  const expected = crypto
-    .createHmac('sha256', TV_SECRET)
-    .update(req.rawBody)
-    .digest('hex');
-
-  try {
-    return crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(sig));
-  } catch {
-    return false;
-  }
-}
-
-app.get('/', (_req, res) => res.send('TV webhook up'));
-app.get('/healthz', (_req, res) => res.status(200).send('OK'));
-
-app.post('/webhook', (req, res) => {
-  if (!verifySignature(req)) {
-    return res.status(401).json({ ok: false, error: 'bad signature' });
-  }
-
-  // Hier kommt dein Handling rein (z.B. Order weiterleiten)
-  console.log('Alert payload:', req.body);
-
-  res.json({ ok: true });
+// Healthcheck
+app.get('/healthz', (req, res) => {
+  res.json({ ok: true, ts: new Date().toISOString() });
 });
 
+// Debug-Endpunkt: zeigt ob das Secret auf dem Server vorhanden ist (ohne es preiszugeben)
+app.get('/debug/env', (req, res) => {
+  res.json({
+    hasSecret: TV_SECRET.length > 0,
+    secretLength: TV_SECRET.length,           // nur Länge, nicht den Wert!
+    nodeEnv: process.env.NODE_ENV || null,
+  });
+});
+
+// Webhook
+app.post('/webhook', (req, res) => {
+  // 1) clientSecret aus Body, Header X-TV-SECRET, oder "Authorization: Bearer <secret>"
+  const authHeader = req.get('authorization') || '';
+  const fromBearer = authHeader.toLowerCase().startsWith('bearer ')
+    ? authHeader.slice(7).trim()
+    : '';
+
+  const clientSecret = (
+      (req.body && req.body.secret) ||
+      req.get('x-tv-secret') ||
+      fromBearer ||
+      ''
+    ).toString().trim();
+
+  // 2) Troubleshooting-Infos (ohne geheime Werte!) ins Log
+  console.log('[WEBHOOK] incoming', {
+    time: new Date().toISOString(),
+    hasServerSecret: TV_SECRET.length > 0,
+    clientSecretLen: clientSecret.length,
+    headersSeen: {
+      hasAuth: !!authHeader,
+      hasXTV: !!req.get('x-tv-secret')
+    }
+  });
+
+  // 3) hart & eindeutig antworten (hilft beim Testen)
+  if (!TV_SECRET) {
+    return res.status(500).json({
+      ok: false,
+      error: 'server_secret_missing',
+      msg: 'Server: TV_SECRET ist NICHT gesetzt. Prüfe Render > Environment Variables.',
+    });
+  }
+
+  if (!clientSecret) {
+    return res.status(401).json({
+      ok: false,
+      error: 'client_secret_missing',
+      msg: 'Erwarte Secret in body.secret ODER Header X-TV-SECRET ODER Authorization: Bearer <secret>',
+    });
+  }
+
+  if (clientSecret !== TV_SECRET) {
+    return res.status(401).json({
+      ok: false,
+      error: 'secret_mismatch',
+      msg: 'Client-Secret stimmt nicht.',
+      gotLen: clientSecret.length
+    });
+  }
+
+  // 4) Alles ok -> payload verarbeiten (hier nur echo zurück)
+  const payload = req.body || {};
+  console.log('[WEBHOOK] accepted payload:', payload);
+
+  res.json({ ok: true, received: payload });
+});
+
+// Server starten
+const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
-  console.log(`listening on ${PORT}`);
+  console.log(`Server running on port ${PORT}`);
 });
