@@ -1,25 +1,20 @@
-const express = require("express");
-const bodyParser = require("body-parser");
+// server.js - minimal Express webhook
+const express = require('express');
+const cors = require('cors');
 
 const app = express();
-app.use(bodyParser.json());
 
-const SECRET = process.env.TV_SECRET || "default_secret";
+app.use(cors());
+app.use(express.json()); // parse application/json
 
-app.post("/hook", (req, res) => {
-    const { secret, cmd } = req.body;
+// Optionaler Secret-Check (setze TV_SECRET bei Render → Environment)
+const SECRET = process.env.TV_SECRET || '';
 
-    if (secret !== SECRET) {
-        return res.status(403).send({ error: "Unauthorized" });
-    }
+function authOk(req) {
+  const q = req.query.token;
+  const h = req.get('x-tv-secret') || req.get('x-webhook-token');
+  const b = req.body && (req.body.token || req.body.secret);
+  return SECRET ? (q === SECRET || h === SECRET || b === SECRET) : true;
+}
 
-    console.log("TradingView command received:", cmd);
-    res.send({ status: "ok" });
-});
-
-app.get("/", (req, res) => {
-    res.send("Webhook server is running!");
-});
-
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+app
