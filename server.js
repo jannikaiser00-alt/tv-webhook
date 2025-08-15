@@ -313,6 +313,29 @@ app.post("/webhook", async (req, res) => {
 
     // --- Payload lesen ---
     const p = req.body || {};
+
+    // --- PING / STATUS (frühe Rückgabe) ---------------------------------
+    const cmd = (p.cmd || "").toLowerCase();
+    const reason = (p.reason || "").toLowerCase();
+    if (cmd === "ping" || cmd === "status" || reason === "ping" || reason === "status") {
+      const symbol = (p.symbol || "SOLUSDT").toUpperCase();
+      console.log("[PING]", JSON.stringify({ symbol, from: "tradingview", ts: new Date().toISOString() }));
+      return res.json({
+        ok: true,
+        kind: "PING_ACK",
+        serverTime: new Date().toISOString(),
+        version: VERSION,
+        state: {
+          dayKey: state.dayKey,
+          riskUsedUsd: +state.riskUsedUsd.toFixed(2),
+          tradesAccepted: state.tradesAccepted,
+          tradesRejected: state.tradesRejected
+        }
+      });
+    }
+    // ---------------------------------------------------------------------
+
+    // ab hier nur noch echte Trade-Signale
     const side   = (p.side || "").toLowerCase();     // buy/sell
     const symbol = (p.symbol || "SOLUSDT").toUpperCase();
     const px     = Number(p.px);
@@ -562,3 +585,4 @@ async function placeOrderAndBracketsBitunix({ side, symbol, qty, entry, sl, tp, 
   throw new Error("Bitunix adapter not implemented yet.");
 }
 */
+
