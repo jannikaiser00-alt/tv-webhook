@@ -77,6 +77,27 @@ function pushDecision(entry) {
   if (state.decisions.length > DECISION_BUFFER) state.decisions.shift();
 }
 
+// =============== LOG HELPERS ===============
+function logInfo(msg, extra = undefined) {
+  if (extra !== undefined) console.log(msg, extra);
+  else console.log(msg);
+}
+function logReject(reason, ctx = {}) {
+  // kompaktes Einzeilen-Log für abgelehnte / nicht relevante Events
+  const t = new Date().toISOString();
+  const meta = [];
+  if (ctx.symbol) meta.push(ctx.symbol);
+  if (ctx.side)   meta.push(ctx.side.toUpperCase());
+  if (ctx.gridIndex !== undefined) meta.push(`#${ctx.gridIndex}`);
+  const metaStr = meta.length ? ` [${meta.join(" ")}]` : "";
+  console.log(`[REJECT] ${reason}${metaStr} @ ${t}`);
+}
+function logAccept(ctx = {}) {
+  const t = new Date().toISOString();
+  const { symbol, side, entry, sl, tp, rr } = ctx;
+  console.log(`[ACCEPT] ${side?.toUpperCase?.()} ${symbol} @${entry} SL ${sl} TP ${tp} RR=${rr} @ ${t}`);
+}
+
 // ===================== UTILS =====================
 function roundToStep(v, step) {
   if (!step || step <= 0) return v;
@@ -297,29 +318,38 @@ app.post("/webhook", async (req, res) => {
   try {
     rotateDayIfNeeded();
 
+    // Body vorab lesen (für Logging bei Fehlern)
+    const pRaw = req.body || {};
+
     // --- Secret prüfen ---
     const authHeader = req.get("authorization") || "";
     const fromBearer = authHeader.toLowerCase().startsWith("bearer ")
       ? authHeader.slice(7).trim() : "";
     const clientSecret = (
-      (req.body && req.body.secret) ||
+      (pRaw && pRaw.secret) ||
       req.get("x-tv-secret") ||
       fromBearer || ""
     ).toString().trim();
 
-    if (!TV_SECRET)   return res.status(500).json({ ok: false, error: "server_secret_missing" });
-    if (!clientSecret) return res.status(401).json({ ok: false, error: "client_secret_missing" });
-    if (clientSecret !== TV_SECRET) return res.status(401).json({ ok: false, error: "secret_mismatch" });
+    if (!TV_SECRET) {
+      logReject("server_secret_missing");
+      return res.status(500).json({ ok: false, error: "server_secret_missing" });
+    }
+    if (!clientSecret) {
+      logReject("client_secret_missing");
+      return res.status(401).json({ ok: false, error: "client_secret_missing" });
+    }
+    if (clientSecret !== TV_SECRET) {
+      logReject("secret_mismatch");
+      return res.status(401).json({ ok: false, error: "secret_mismatch" });
+    }
 
-    // --- Payload lesen ---
-    const p = req.body || {};
-
-    // --- PING / STATUS (frühe Rückgabe) ---------------------------------
-    const cmd = (p.cmd || "").toLowerCase();
-    const reason = (p.reason || "").toLowerCase();
-    if (cmd === "ping" || cmd === "status" || reason === "ping" || reason === "status") {
-      const symbol = (p.symbol || "SOLUSDT").toUpperCase();
-      console.log("[PING]", JSON.stringify({ symbol, from: "tradingview", ts: new Date().toISOString() }));
+    // --- PING / STATUS (frühe Rückgabe, "nicht relevant" fürs Trading) ---
+    const cmd = (pRaw.cmd || "").toLowerCase();
+    const reasonFlag = (pRaw.reason || "").toLowerCase();
+    if (cmd === "ping" || cmd === "status" || reasonFlag === "ping" || reasonFlag === "status") {
+      const symbolPing = (pRaw.symbol || "SOLUSDT").toUpperCase();
+      console.log(`[INFO] Heartbeat/Status erhalten (nicht handelbar): ${symbolPing} @ ${new Date().toISOString()}`);
       return res.json({
         ok: true,
         kind: "PING_ACK",
@@ -336,29 +366,34 @@ app.post("/webhook", async (req, res) => {
     // ---------------------------------------------------------------------
 
     // ab hier nur noch echte Trade-Signale
-    const side   = (p.side || "").toLowerCase();     // buy/sell
-    const symbol = (p.symbol || "SOLUSDT").toUpperCase();
-    const px     = Number(p.px);
-    let   sl     = p.sl != null ? Number(p.sl) : null;
-    let   tp     = p.tp != null ? Number(p.tp) : null;
-    const qtyUsd = p.qtyUsd != null ? Number(p.qtyUsd) : null;
-    const id     = (p.id || `${Date.now()}_${Math.random().toString(36).slice(2,8)}`).toString();
-    const ts     = Number(p.ts || Date.now());
+    const side   = (pRaw.side || "").toLowerCase();     // buy/sell
+    const symbol = (pRaw.symbol || "SOLUSDT").toUpperCase();
+    const px     = Number(pRaw.px);
+    let   sl     = pRaw.sl != null ? Number(pRaw.sl) : null;
+    let   tp     = pRaw.tp != null ? Number(pRaw.tp) : null;
+    const qtyUsd = pRaw.qtyUsd != null ? Number(pRaw.qtyUsd) : null;
+    const id     = (pRaw.id || `${Date.now()}_${Math.random().toString(36).slice(2,8)}`).toString();
+    const ts     = Number(pRaw.ts || Date.now());
 
-    if (!(side === "buy" || side === "sell"))
+    if (!(side === "buy" || side === "sell")) {
+      logReject("bad_side", { symbol, side });
       return res.status(400).json({ ok: false, error: "bad_side" });
-    if (!isFinite(px))
+    }
+    if (!isFinite(px)) {
+      logReject("bad_px", { symbol, side });
       return res.status(400).json({ ok: false, error: "bad_px" });
+    }
 
     // --- Idempotenz & Stale ---
     if (seenBefore(id)) {
+      logReject("duplicate_dropped", { symbol, side });
       return res.json({ ok: true, decision: "DUPLICATE_DROPPED", id });
     }
     if (stale(ts)) {
       state.tradesRejected++;
-      const reason = "stale_alert";
-      state.rejectReasons.set(reason, (state.rejectReasons.get(reason) || 0) + 1);
-      return res.json({ ok: true, decision: "REJECT", reason, ageMs: Date.now() - ts });
+      state.rejectReasons.set("stale_alert", (state.rejectReasons.get("stale_alert") || 0) + 1);
+      logReject("stale_alert", { symbol, side });
+      return res.json({ ok: true, decision: "REJECT", reason: "stale_alert", ageMs: Date.now() - ts });
     }
 
     // --- Marktdaten & Indikatoren ---
@@ -369,6 +404,7 @@ app.post("/webhook", async (req, res) => {
 
     const senti = sentimentScore(candles);
     if (senti.atr14 == null || senti.ema50 == null || senti.ema200 == null || senti.rsi14 == null) {
+      logReject("indicator_insufficient_data", { symbol, side });
       return res.status(500).json({ ok: false, error: "indicator_insufficient_data" });
     }
 
@@ -378,17 +414,17 @@ app.post("/webhook", async (req, res) => {
     const spreadBps = mid > 0 ? (spread / mid) * 1e4 : 9999;
     if (spreadBps > SPREAD_MAX_BPS) {
       state.tradesRejected++;
-      const reason = "SpreadTooWide";
-      state.rejectReasons.set(reason, (state.rejectReasons.get(reason) || 0) + 1);
-      return res.json({ ok: true, decision: "REJECT", reason, spreadBps, limitBps: SPREAD_MAX_BPS });
+      state.rejectReasons.set("SpreadTooWide", (state.rejectReasons.get("SpreadTooWide") || 0) + 1);
+      logReject("SpreadTooWide", { symbol, side });
+      return res.json({ ok: true, decision: "REJECT", reason: "SpreadTooWide", spreadBps, limitBps: SPREAD_MAX_BPS });
     }
 
     // --- Volatility Brake (ATR Z‑Score) ---
     if (senti.zAtr != null && senti.zAtr > Z_ATR_MAX) {
       state.tradesRejected++;
-      const reason = "VolSpike";
-      state.rejectReasons.set(reason, (state.rejectReasons.get(reason) || 0) + 1);
-      return res.json({ ok: true, decision: "REJECT", reason, zAtr: senti.zAtr, zAtrMax: Z_ATR_MAX });
+      state.rejectReasons.set("VolSpike", (state.rejectReasons.get("VolSpike") || 0) + 1);
+      logReject("VolSpike", { symbol, side });
+      return res.json({ ok: true, decision: "REJECT", reason: "VolSpike", zAtr: senti.zAtr, zAtrMax: Z_ATR_MAX });
     }
 
     // --- SL/TP ergänzen falls fehlend ---
@@ -423,7 +459,10 @@ app.post("/webhook", async (req, res) => {
     // --- RR prüfen/erzwingen ---
     let rrNow = rr(px, sl, tp, side);
     let rrAdjusted = false;
-    if (rrNow == null) return res.status(400).json({ ok: false, error: "rr_compute_failed" });
+    if (rrNow == null) {
+      logReject("rr_compute_failed", { symbol, side });
+      return res.status(400).json({ ok: false, error: "rr_compute_failed" });
+    }
     if (rrNow < MIN_RR && AUTO_ADJUST_TP) {
       const risk = side === "buy" ? (px - sl) : (sl - px);
       tp = side === "buy" ? (px + MIN_RR * risk) : (px - MIN_RR * risk);
@@ -442,17 +481,17 @@ app.post("/webhook", async (req, res) => {
     // --- Symbol-Throttle ---
     if (symbolThrottled(symbol)) {
       state.tradesRejected++;
-      const reason = "SymbolThrottle";
-      state.rejectReasons.set(reason, (state.rejectReasons.get(reason) || 0) + 1);
-      return res.json({ ok: true, decision: "REJECT", reason, throttleMs: MIN_MS_BETWEEN_TRADES });
+      state.rejectReasons.set("SymbolThrottle", (state.rejectReasons.get("SymbolThrottle") || 0) + 1);
+      logReject("SymbolThrottle", { symbol, side });
+      return res.json({ ok: true, decision: "REJECT", reason: "SymbolThrottle", throttleMs: MIN_MS_BETWEEN_TRADES });
     }
 
     // --- Tageslimits (Budget & Trades) ---
     if (state.tradesAccepted >= MAX_TRADES_PER_DAY) {
       state.tradesRejected++;
-      const reason = "MaxTradesDay";
-      state.rejectReasons.set(reason, (state.rejectReasons.get(reason) || 0) + 1);
-      return res.json({ ok: true, decision: "REJECT", reason, max: MAX_TRADES_PER_DAY });
+      state.rejectReasons.set("MaxTradesDay", (state.rejectReasons.get("MaxTradesDay") || 0) + 1);
+      logReject("MaxTradesDay", { symbol, side });
+      return res.json({ ok: true, decision: "REJECT", reason: "MaxTradesDay", max: MAX_TRADES_PER_DAY });
     }
 
     // --- Sizing (Exchange-Filter) ---
@@ -463,9 +502,9 @@ app.post("/webhook", async (req, res) => {
     if (filters.stepSize > 0) qty = floorToStep(qty, filters.stepSize);
     if (qty <= 0) {
       state.tradesRejected++;
-      const reason = "QtyTooSmall";
-      state.rejectReasons.set(reason, (state.rejectReasons.get(reason) || 0) + 1);
-      return res.json({ ok: true, decision: "REJECT", reason, step: filters.stepSize, minNotional: filters.minNotional });
+      state.rejectReasons.set("QtyTooSmall", (state.rejectReasons.get("QtyTooSmall") || 0) + 1);
+      logReject("QtyTooSmall", { symbol, side });
+      return res.json({ ok: true, decision: "REJECT", reason: "QtyTooSmall", step: filters.stepSize, minNotional: filters.minNotional });
     }
 
     let notional = qty * px;
@@ -483,10 +522,10 @@ app.post("/webhook", async (req, res) => {
 
     if (DAILY_RISK_BUDGET_USD > 0 && (state.riskUsedUsd + tradeRiskUsd) > DAILY_RISK_BUDGET_USD) {
       state.tradesRejected++;
-      const reason = "DailyRiskBudget";
-      state.rejectReasons.set(reason, (state.rejectReasons.get(reason) || 0) + 1);
+      state.rejectReasons.set("DailyRiskBudget", (state.rejectReasons.get("DailyRiskBudget") || 0) + 1);
+      logReject("DailyRiskBudget", { symbol, side });
       return res.json({
-        ok: true, decision: "REJECT", reason,
+        ok: true, decision: "REJECT", reason: "DailyRiskBudget",
         riskUsedUsd: state.riskUsedUsd, tradeRiskUsd, limit: DAILY_RISK_BUDGET_USD
       });
     }
@@ -501,7 +540,7 @@ app.post("/webhook", async (req, res) => {
     const payload = {
       ok: true,
       decision: accept ? "ACCEPT" : "REJECT",
-      wouldPlace: accept,                    // <<< wichtigste Flag zum Verstehen
+      wouldPlace: accept,
       action: accept ? "PLACE_ORDER" : "SKIP",
       mode: SENTI_MODE,
       reasonsRejected: accept ? [] : reasons,
@@ -532,11 +571,13 @@ app.post("/webhook", async (req, res) => {
     if (accept) {
       state.tradesAccepted++;
       state.riskUsedUsd += tradeRiskUsd;
+      logAccept({ symbol, side, entry, sl: slR, tp: tpR, rr: payload.order.rr });
     } else {
       state.tradesRejected++;
       for (const r of payload.reasonsRejected) {
         state.rejectReasons.set(r, (state.rejectReasons.get(r) || 0) + 1);
       }
+      logReject(`Decision=${payload.decision}`, { symbol, side });
     }
 
     // Puffer füllen
@@ -549,7 +590,7 @@ app.post("/webhook", async (req, res) => {
       zAtr: payload.indicators.zAtr
     });
 
-    // Menschlich lesbares Einzeilen‑Log
+    // Menschlich lesbares Einzeilen‑Log (detailliert)
     if (LOG_DECISIONS) {
       const tag = accept ? "ACCEPT ✅" : "REJECT ❌";
       const reasonTxt = payload.reasonsRejected.length ? ` | ${payload.reasonsRejected.join(",")}` : "";
@@ -585,4 +626,3 @@ async function placeOrderAndBracketsBitunix({ side, symbol, qty, entry, sl, tp, 
   throw new Error("Bitunix adapter not implemented yet.");
 }
 */
-
