@@ -70,7 +70,7 @@ function logRateLimitHeaders(headers) {
   }
 }
 
-module.exports = { fetchCandles, fetchBookTicker, logRateLimitHeaders };
+module.exports = { app, fetchCandles, fetchBookTicker, logRateLimitHeaders };
 
 // server.js
 "use strict";
