@@ -1,4 +1,4 @@
-// server.js (mit axios-retry + Caching + Rate-Limit-Log)
+// server.js (axios-retry + Caching + Rate-Limit-Log)
 
 "use strict";
 
@@ -21,6 +21,9 @@ axiosRetry(axios, {
 
 const app = express();
 app.use(express.json());
+
+// ===================== EXCHANGE_BASE Definieren =====================
+const EXCHANGE_BASE = process.env.EXCHANGE_BASE || "https://api.binance.com";
 
 // ===================== CACHES =====================
 const candlesCache = new Map(); // key: symbol_interval -> { ts, data }
@@ -66,6 +69,9 @@ function logRateLimitHeaders(headers) {
     console.log(`[LIMIT] Binance REST used-weight: ${used}/1200`);
   }
 }
+
+module.exports = { fetchCandles, fetchBookTicker, logRateLimitHeaders };
+
 // server.js
 "use strict";
 
