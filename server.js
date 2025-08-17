@@ -2,7 +2,6 @@
 
 "use strict";
 
-const express = require("express");
 const axios = require("axios");
 const axiosRetry = require("axios-retry").default;
 
@@ -18,9 +17,6 @@ axiosRetry(axios, {
     console.warn(`[BACKOFF] Retry #${retryCount} for ${requestConfig?.url} – Status: ${status}`);
   }
 });
-
-const app = express();
-app.use(express.json());
 
 // ===================== EXCHANGE_BASE Definieren =====================
 const EXCHANGE_BASE = process.env.EXCHANGE_BASE || "https://api.binance.com";
@@ -70,7 +66,7 @@ function logRateLimitHeaders(headers) {
   }
 }
 
-module.exports = { app, fetchCandles, fetchBookTicker, logRateLimitHeaders };
+module.exports = { fetchCandles, fetchBookTicker, logRateLimitHeaders };
 
 // server.js
 "use strict";
