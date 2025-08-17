@@ -2,8 +2,9 @@
 
 "use strict";
 
+// axios korrekt nur einmal importieren
 const axios = require("axios");
-const axiosRetry = require("axios-retry").default;
+const axiosRetry = require("axios-retry");
 
 // === Retry-Konfiguration ===
 axiosRetry(axios, {
