@@ -611,8 +611,6 @@ app.post("/webhook", async (req, res) => {
 });
 
 // ===================== START =====================
-const PORT = process.env.PORT || 10000;
-app.listen(PORT, () => console.log(`Server running on port ${PORT} (v=${VERSION})`));
 
 /* ===================== BITUNIX-ADAPTER (Skizze) =====================
 
