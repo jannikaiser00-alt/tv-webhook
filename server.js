@@ -43,8 +43,6 @@ const FALLBACK_MIN_NOTIONAL = parseFloat(process.env.MIN_NOTIONAL_USD || "5");
 const LOG_DECISIONS         = (process.env.LOG_DECISIONS || "true").toLowerCase() === "true";
 const DECISION_BUFFER       = parseInt(process.env.DECISION_BUFFER || "200", 10);
 
-const DECISION_BUFFER = parseInt(process.env.DECISION_BUFFER || "200", 10);
-
 // HTTP Client mit Retry
 const http = axios.create({
   baseURL: EXCHANGE_BASE,
@@ -169,9 +167,10 @@ async function fetchBookTicker(symbol = "SOLUSDT") {
 const exchInfoCache = new Map(); // symbol -> { tickSize, stepSize, minNotional, ts }
 
 async function fetchSymbolFilters(symbol = "SOLUSDT") {
-  const cached = exchInfoCache.get(symbol);
-  const now = Date.now();
-  if (cached && now - cached.ts < 60_000) return cached; // 60s Cache
+const { data } = await http.get(`/api/v3/klines`, {
+  params: { symbol: symbol.toUpperCase(), interval, limit }
+});
+
 
   const url = `${EXCHANGE_BASE}/api/v3/exchangeInfo?symbol=${symbol.toUpperCase()}`;
   try {
@@ -179,10 +178,10 @@ async function fetchSymbolFilters(symbol = "SOLUSDT") {
     const s = data.symbols && data.symbols[0];
     if (!s || !s.filters) throw new Error("exchangeInfo: symbol not found");
 
-    let tickSize = FALLBACK_PRICE_TICK;
-    let stepSize = FALLBACK_LOT_STEP;
-    let minNotional = FALLBACK_MIN_NOTIONAL;
-
+    const { data } = await http.get(`/api/v3/ticker/bookTicker`, {
+  params: { symbol: symbol.toUpperCase() }
+});
+    
     for (const f of s.filters) {
       if (f.filterType === "PRICE_FILTER") tickSize = parseFloat(f.tickSize);
       if (f.filterType === "LOT_SIZE")     stepSize = parseFloat(f.stepSize);
@@ -197,12 +196,10 @@ async function fetchSymbolFilters(symbol = "SOLUSDT") {
     return out;
   }
 }
+const { data } = await http.get(`/api/v3/exchangeInfo`, {
+  params: { symbol: symbol.toUpperCase() }
+});
 
-// ===================== INDICATORS =====================
-function ema(values, len) {
-  if (!values || values.length < len) return null;
-  const k = 2 / (len + 1);
-  let e = values[0];
   for (let i = 1; i < values.length; i++) e = values[i] * k + e * (1 - k);
   return e;
 }
