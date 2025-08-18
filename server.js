@@ -479,7 +479,7 @@ router.get("/debug/state", requireSecret, (req, res) => {
 });
 
 // Debug Decisions
-router.get("/debug/decisions", (req, res) => {
+router.get("/debug/decisions", requireSecret, (req, res) => {
   const limit  = Math.max(1, Math.min(1000, parseInt(req.query.limit || "100", 10)));
   const symbol = (req.query.symbol || "").toUpperCase();
   const rows = state.decisions
@@ -489,7 +489,7 @@ router.get("/debug/decisions", (req, res) => {
 });
 
 // Debug Summary
-router.get("/debug/summary", (req, res) => {
+router.get("/debug/summary", requireSecret, (req, res) => {
   const reasons = Array.from(state.rejectReasons.entries())
     .sort((a, b) => b[1] - a[1])
     .map(([reason, count]) => ({ reason, count }));
@@ -503,7 +503,7 @@ router.get("/debug/summary", (req, res) => {
 });
 
 // Debug WS (Status des WebSocket-Streams prüfen)
-router.get("/debug/ws", (req, res) => {
+router.get("/debug/ws", requireSecret, (req, res) => {
   const s = {
     ready: ws && ws.readyState === 1,
     state: ws ? ws.readyState : null,
@@ -515,7 +515,7 @@ router.get("/debug/ws", (req, res) => {
 });
 
 // Debug Paper-Trading: Wallet + PnL
-router.get("/debug/paper", (req, res) => {
+router.get("/debug/paper", requireSecret, (req, res) => {
   try {
     // Mid-Preise aus Book-Cache (falls vorhanden) für uPnL
     const midBy = {};
@@ -559,7 +559,7 @@ router.get("/debug/paper", (req, res) => {
 });
 
 // Debug Paper-Trading: Wallet resetten (POST, optional ?balance=12345)
-router.post("/debug/paper/reset", (req, res) => {
+router.post("/debug/paper/reset", requireSecret, (req, res) => {
   try {
     const start = Number(req.query.balance ?? req.body?.balance ?? 10000);
     state.paperWallet.balanceUsd = Number.isFinite(start) ? start : 10000;
