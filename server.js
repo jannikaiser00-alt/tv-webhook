@@ -68,6 +68,69 @@ function requireSecret(req, res, next) {
   }
   next();
 }
+// ===================== TELEGRAM CONFIG & HELPERS =====================
+// .env:
+//   TELEGRAM_BOT_TOKEN = 123456789:AA...YourBotToken
+//   TELEGRAM_CHAT_ID   = 123456789 (deine Chat-ID oder Channel @name)
+const TELEGRAM_BOT_TOKEN = (process.env.TELEGRAM_BOT_TOKEN || "").trim();
+const TELEGRAM_CHAT_ID   = (process.env.TELEGRAM_CHAT_ID || "").trim();
+const TELEGRAM_ENABLED   = TELEGRAM_BOT_TOKEN.length > 0 && TELEGRAM_CHAT_ID.length > 0;
+
+// Einfache Senderoutine (Plain-Text ohne Markdown-Parsing = robust)
+async function sendTG(text) {
+  if (!TELEGRAM_ENABLED) return;
+  try {
+    await axios.post(
+      `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`,
+      {
+        chat_id: TELEGRAM_CHAT_ID,
+        text,
+        disable_web_page_preview: true
+      },
+      { timeout: 10000 }
+    );
+  } catch (e) {
+    console.error("[TG] send failed:", e?.response?.data || e.message);
+  }
+}
+
+// Einheitliche Kurz-API für unsere Events
+const tg = {
+  wsUp: (streams) => sendTG(`🟢 WS connected: ${streams}`),
+  wsDown: () => sendTG(`🔴 WS disconnected — reconnecting...`),
+
+  orderAccept: (payload) => {
+    const o = payload.order || {};
+    const lines = [
+      `✅ ACCEPT ${o.side?.toUpperCase?.()} ${o.symbol}`,
+      `@ ${o.entry} | SL ${o.sl} | TP ${o.tp} | RR ${o.rr}`,
+      `Qty ${o.qty} | Notional ${o.notional} | Risk $${o.riskUsd}`
+    ];
+    return sendTG(lines.join("\n"));
+  },
+
+  orderReject: ({ side, symbol, entry, reasons }) => {
+    const lines = [
+      `❌ REJECT ${side?.toUpperCase?.()} ${symbol}`,
+      `@ ${entry}`,
+      `Reason(s): ${(reasons && reasons.length) ? reasons.join(", ") : "n/a"}`
+    ];
+    return sendTG(lines.join("\n"));
+  },
+
+  paperClosed: (t) => {
+    const emoji = t.reason === "TP" ? "🥳" : "⚠️";
+    const sign  = t.pnl >= 0 ? "+" : "";
+    const lines = [
+      `${emoji} PAPER CLOSED ${t.side.toUpperCase()} ${t.symbol}`,
+      `Entry ${t.entry} → Exit ${t.exit} (${t.reason})`,
+      `PnL ${sign}${t.pnl.toFixed(2)} USD`
+    ];
+    return sendTG(lines.join("\n"));
+  }
+};
+
+
 
 // ===================== HTTP CLIENT (mit Retry) =====================
 const http = axios.create({
@@ -172,37 +235,47 @@ function settlePaperForSymbol(symbol, mid) {
 
   for (let i = w.openTrades.length - 1; i >= 0; i--) {
     const t = w.openTrades[i];
-    if (t.symbol !== symbol) continue;
+    if (!t || t.symbol !== symbol) continue;
 
-    const hitSL = t.side === "buy"  ? mid <= t.sl : mid >= t.sl;
-    const hitTP = t.side === "buy"  ? mid >= t.tp : mid <= t.tp;
+    const isBuy  = t.side === "buy";
+    const hitSL  = isBuy ? mid <= t.sl : mid >= t.sl;
+    const hitTP  = isBuy ? mid >= t.tp : mid <= t.tp;
     if (!hitSL && !hitTP) continue;
 
+    // Exit-Preis strikt auf SL/TP-Level (wie vorher)
     const exit = hitTP ? t.tp : t.sl;
-    const pnl  = (t.side === "buy" ? (exit - t.entry) : (t.entry - exit)) * t.qty;
 
-    // Wallet buchen
+    // PnL in USD (wie vorher)
+    const pnl  = (isBuy ? (exit - t.entry) : (t.entry - exit)) * t.qty;
+
+    // Wallet buchen (Realized PnL auf Balance)
     w.balanceUsd += pnl;
 
-    // Trade schließen
+    // Trade aus open[] entfernen und in closed[] verschieben
     w.openTrades.splice(i, 1);
-    w.closedTrades.push({
+    const closed = {
       ...t,
       exit,
       tsClose: Date.now(),
       reason: hitTP ? "TP" : "SL",
       pnl
-    });
+    };
+    w.closedTrades.push(closed);
 
     console.log(
-      `[PAPER] Closed ${t.side.toUpperCase()} ${t.symbol} @${exit} (${hitTP ? "TP" : "SL"}) PnL=${pnl.toFixed(2)} USD`
+      `[PAPER] Closed ${t.side.toUpperCase()} ${t.symbol} @${exit} (${closed.reason}) PnL=${pnl.toFixed(2)} USD`
     );
+
+    // OPTIONAL: Telegram-Notify, wenn tg.paperClosed verfügbar ist
+    try {
+      tg?.paperClosed?.(closed);
+    } catch (e) {
+      // niemals crashen lassen – Log reicht
+      console.error("[PAPER→TG] notify failed:", e?.message || e);
+    }
   }
 }
 
-
-// (optional) gleich initialisieren, damit dayKey nicht null ist
-rotateDayIfNeeded();
 
 
 // ===================== [WS] WEBSOCKET CLIENT =====================
@@ -218,59 +291,78 @@ function startWS(symbol = "SOLUSDT", interval = MARKET_INTERVAL) {
 
   ws.on("open", () => {
     console.log(`[WS] Connected to Binance streams: ${streams}`);
+    // Telegram-Notify (optional-sicher)
+    try { if (typeof tg?.wsUp === "function") tg.wsUp(streams); } catch (e) {
+      console.warn("[TG] wsUp failed:", e?.message || e);
+    }
   });
-ws.on("message", (msg) => {
-  try {
-    const parsed = JSON.parse(msg);
-    const data = parsed.data;
 
-    // BookTicker Event
-    if (data.e === "bookTicker") {
-      const s   = symbol.toUpperCase();
-      const bid = parseFloat(data.b);
-      const ask = parseFloat(data.a);
+  ws.on("message", (msg) => {
+    try {
+      const parsed = JSON.parse(msg);
+      const data = parsed?.data;
 
-      bookCache.set(s, {
-        ts: Date.now(),
-        data: { bid, ask },
-      });
+      // BookTicker Event
+      if (data?.e === "bookTicker") {
+        const s   = symbol.toUpperCase();
+        const bid = parseFloat(data.b);
+        const ask = parseFloat(data.a);
 
-      // ➜ Realtime: Paper-Trades mit aktuellem Mid-Preis prüfen & ggf. schließen
-      const mid = (bid + ask) / 2;
-      settlePaperForSymbol(s, mid);
+        if (Number.isFinite(bid) && Number.isFinite(ask)) {
+          bookCache.set(s, {
+            ts: Date.now(),
+            data: { bid, ask },
+          });
+
+          // ➜ Realtime: Paper-Trades mit aktuellem Mid-Preis prüfen & ggf. schließen
+          const mid = (bid + ask) / 2;
+          settlePaperForSymbol(s, mid);
+        }
+      }
+
+      // Kline Event
+      if (data?.e === "kline") {
+        const k = data.k;
+        if (k) {
+          const key = `${symbol.toUpperCase()}_${interval}`;
+          const h = parseFloat(k.h);
+          const l = parseFloat(k.l);
+          const c = parseFloat(k.c);
+          if ([h, l, c].every(Number.isFinite)) {
+            const out = {
+              highs: [h],
+              lows: [l],
+              closes: [c],
+              lastClose: c,
+            };
+            candlesCache.set(key, { ts: Date.now(), data: out });
+          }
+        }
+      }
+    } catch (err) {
+      console.error("[WS ERROR message]", err?.message || err);
     }
+  });
 
-    // Kline Event
-    if (data.e === "kline") {
-      const k = data.k;
-      const key = `${symbol.toUpperCase()}_${interval}`;
-      const out = {
-        highs: [parseFloat(k.h)],
-        lows: [parseFloat(k.l)],
-        closes: [parseFloat(k.c)],
-        lastClose: parseFloat(k.c),
-      };
-      candlesCache.set(key, { ts: Date.now(), data: out });
+  ws.on("close", (code, reason) => {
+    console.log(`[WS] Disconnected (code=${code || 0}) – retrying in ~5s...`);
+    // Telegram-Notify (optional-sicher)
+    try { if (typeof tg?.wsDown === "function") tg.wsDown(); } catch (e) {
+      console.warn("[TG] wsDown failed:", e?.message || e);
     }
-  } catch (err) {
-    console.error("[WS ERROR]", err.message);
-  }
-});
+    // kleiner Jitter, um Reconnect-Stürme zu vermeiden
+    const delay = 5000 + Math.floor(Math.random() * 2000);
+    setTimeout(() => startWS(symbol, interval), delay);
+  });
 
-ws.on("close", () => {
-  console.log("[WS] Disconnected, retrying in 5s...");
-  setTimeout(() => startWS(symbol, interval), 5000);
-});
-
-ws.on("error", (err) => {
-  console.error("[WS ERROR]", err.message);
-  ws.close();
-});
+  ws.on("error", (err) => {
+    console.error("[WS ERROR socket]", err?.message || err);
+    try { ws.close(); } catch {}
+  });
 }
 
 // Start WebSocket beim Boot
 startWS("SOLUSDT", MARKET_INTERVAL);
-
 
 // ===================== INDICATORS =====================
 function ema(values, len) {
