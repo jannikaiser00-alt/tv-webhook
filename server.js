@@ -483,6 +483,48 @@ router.get("/debug/ws", (req, res) => {
   };
   res.json(s);
 });
+// Debug Paper-Trading: Wallet + PnL
+router.get("/debug/paper", (req, res) => {
+  try {
+    // Mid-Preise aus Book-Cache (falls vorhanden) für uPnL
+    const midBy = {};
+    for (const s of new Set(state.paperWallet.openTrades.map(t => t.symbol))) {
+      const book = bookCache.get(s)?.data;
+      if (book && Number.isFinite(book.bid) && Number.isFinite(book.ask)) {
+        midBy[s] = (book.bid + book.ask) / 2;
+      }
+    }
+
+    const open = state.paperWallet.openTrades.map(t => {
+      const mid = midBy[t.symbol];
+      const uPnL = Number.isFinite(mid)
+        ? (t.side === "buy" ? (mid - t.entry) : (t.entry - mid)) * t.qty
+        : 0;
+      return {
+        ...t,
+        mid: Number.isFinite(mid) ? mid : null,
+        uPnL: +uPnL.toFixed(4)
+      };
+    });
+
+    const realized = state.paperWallet.closedTrades.reduce((a, c) => a + (c.pnl || 0), 0);
+    const unrealized = open.reduce((a, c) => a + (c.uPnL || 0), 0);
+
+    res.json({
+      balanceUsd: +state.paperWallet.balanceUsd.toFixed(2),
+      realizedPnL: +realized.toFixed(2),
+      unrealizedPnL: +unrealized.toFixed(2),
+      equityUsd: +(state.paperWallet.balanceUsd + realized + unrealized).toFixed(2),
+      openCount: open.length,
+      open,
+      closedCount: state.paperWallet.closedTrades.length,
+      closedLast50: state.paperWallet.closedTrades.slice(-50)
+    });
+  } catch (err) {
+    console.error("[/debug/paper] failed:", err?.stack || err?.message || err);
+    res.status(500).json({ ok: false, error: err?.message || "paper_debug_failed" });
+  }
+});
 
 
 // Global error handler (letzte Middleware vor dem Webhook/Export)
