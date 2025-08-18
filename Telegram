@@ -1,0 +1,109 @@
+// telegram.js
+"use strict";
+
+const axios = require("axios");
+
+function createTelegram(botToken, chatId, opts = {}) {
+  const enabled = Boolean(botToken && chatId);
+  const base = `https://api.telegram.org/bot${botToken}`;
+  const parseMode = opts.parseMode || "HTML";
+
+  async function send(text, extra = {}) {
+    if (!enabled) return;
+    try {
+      await axios.post(`${base}/sendMessage`, {
+        chat_id: chatId,
+        text,
+        parse_mode: parseMode,
+        disable_web_page_preview: true,
+        ...extra,
+      }, { timeout: 10000 });
+    } catch (err) {
+      // Nur loggen – Notify darf den Bot nie crashen
+      console.error("[TG] send failed:", err?.response?.data || err?.message);
+    }
+  }
+
+  // -------- Format Helpers --------
+  const num = (v, d = 4) => {
+    if (v == null || isNaN(v)) return "-";
+    return (+v).toFixed(d);
+  };
+  const pct = (v) => `${num(v * 100, 2)}%`;
+
+  // -------- High-level Notifiers --------
+  async function tradeOpened({ id, side, symbol, entry, sl, tp, rr, qty, notional, riskUsd }) {
+    const text =
+`<b>📥 ENTRY ${side?.toUpperCase?.()} ${symbol}</b>
+Price: <code>${num(entry, 6)}</code>
+SL / TP: <code>${num(sl, 6)}</code> / <code>${num(tp, 6)}</code>
+RR: <code>${num(rr, 2)}</code>
+Qty / Notional: <code>${num(qty, 6)}</code> / <code>${num(notional, 2)} USD</code>
+Risk: <code>${num(riskUsd, 2)} USD</code>
+ID: <code>${id}</code>`;
+    return send(text);
+  }
+
+  async function tradeClosed({ id, side, symbol, entry, exit, reason, qty, pnl }) {
+    const sign = pnl > 0 ? "✅" : (pnl < 0 ? "❌" : "➖");
+    const text =
+`<b>${sign} EXIT ${side?.toUpperCase?.()} ${symbol} (${reason || "-"})</b>
+Entry → Exit: <code>${num(entry, 6)}</code> → <code>${num(exit, 6)}</code>
+Qty: <code>${num(qty, 6)}</code>
+PnL: <code>${num(pnl, 2)} USD</code>
+ID: <code>${id}</code>`;
+    return send(text);
+  }
+
+  async function reject({ id, side, symbol, px, reasons = [], spreadBps, zAtr }) {
+    const why = reasons.length ? reasons.join(", ") : "-";
+    const text =
+`<b>🚫 REJECT ${side?.toUpperCase?.()} ${symbol}</b>
+Px: <code>${num(px, 6)}</code>
+Reason: <code>${why}</code>
+Spread: <code>${num(spreadBps, 3)} bp</code> | zATR: <code>${zAtr != null ? num(zAtr, 2) : "-"}</code>
+ID: <code>${id}</code>`;
+    return send(text);
+  }
+
+  async function wsUp(streams) {
+    return send(`<b>🟢 WS CONNECTED</b>\n<code>${streams}</code>`);
+  }
+  async function wsDown() {
+    return send(`<b>🔴 WS DISCONNECTED</b>`);
+  }
+
+  async function riskBudget({ riskUsedUsd, tradeRiskUsd, limit }) {
+    const text =
+`<b>⚠️ Daily Risk Budget hit</b>
+Used: <code>${num(riskUsedUsd, 2)} USD</code>
+This trade risk: <code>${num(tradeRiskUsd, 2)} USD</code>
+Limit: <code>${num(limit, 2)} USD</code>`;
+    return send(text);
+  }
+
+  async function summary({ balanceUsd, realizedPnL, unrealizedPnL, equityUsd, openCount }) {
+    const text =
+`<b>📊 DAILY SUMMARY</b>
+Balance: <code>${num(balanceUsd, 2)} USD</code>
+Realized: <code>${num(realizedPnL, 2)} USD</code>
+Unrealized: <code>${num(unrealizedPnL, 2)} USD</code>
+Equity: <code>${num(equityUsd, 2)} USD</code>
+Open Trades: <code>${openCount}</code>`;
+    return send(text);
+  }
+
+  return {
+    enabled,
+    send,
+    tradeOpened,
+    tradeClosed,
+    reject,
+    wsUp,
+    wsDown,
+    riskBudget,
+    summary,
+  };
+}
+
+module.exports = createTelegram;
