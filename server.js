@@ -5,19 +5,6 @@ const express = require("express");
 const axios = require("axios");
 const axiosRetry = require("axios-retry").default;
 
-const http = axios.create({
-  baseURL: EXCHANGE_BASE,
-  timeout: 10000,
-  headers: { "User-Agent": "tv-webhook/1.0" }
-});
-
-axiosRetry(http, {
-  retries: 3,
-  retryDelay: axiosRetry.exponentialDelay,
-  retryCondition: (err) =>
-    !err.response || [418, 429, 500, 502, 503, 504].includes(err.response.status),
-});
-
 
 const app = express();
 app.use(express.json());
