@@ -75,7 +75,15 @@ const state = {
   seenIds: new Map(),          // id -> ts (Idempotenz)
   decisions: [],               // ring buffer
   rejectReasons: new Map(),    // reason -> count
+
+  // === Paper Trading Simulation ===
+  paperWallet: {
+    balanceUsd: 10000,   // Start-Kapital
+    openTrades: [],      // laufende Trades
+    closedTrades: []     // abgeschlossene Trades
+  }
 };
+
 // === Day rotation / decision buffer ===
 function todayKeyUTC() {
   const d = new Date();
