@@ -280,6 +280,7 @@ function symbolThrottled(symbol) {
 }
 
 // ===================== ROUTES =====================
+
 // Health
 router.get("/healthz", (req, res) => {
   res.json({ ok: true, ts: new Date().toISOString(), version: VERSION });
@@ -298,21 +299,37 @@ router.get("/debug/env", (req, res) => {
   });
 });
 
-// Debug State
+// Debug State (robust mit Fehlerlogging – nur EINMAL definieren!)
 router.get("/debug/state", (req, res) => {
-  rotateDayIfNeeded();
-  res.json({
-    dayKey: state.dayKey,
-    riskUsedUsd: state.riskUsedUsd,
-    tradesAccepted: state.tradesAccepted,
-    tradesRejected: state.tradesRejected,
-    cachedSymbols: Array.from(exchInfoCache.keys())
-  });
+  try {
+    rotateDayIfNeeded();
+
+    const dayKey         = state?.dayKey ?? null;
+    const riskUsedUsd    = Number(state?.riskUsedUsd ?? 0);
+    const tradesAccepted = Number(state?.tradesAccepted ?? 0);
+    const tradesRejected = Number(state?.tradesRejected ?? 0);
+    const cachedSymbols  = exchInfoCache ? Array.from(exchInfoCache.keys()) : [];
+
+    return res.json({
+      ok: true,
+      dayKey,
+      riskUsedUsd,
+      tradesAccepted,
+      tradesRejected,
+      cachedSymbols
+    });
+  } catch (err) {
+    console.error("[/debug/state] failed:", err?.stack || err?.message || err);
+    return res.status(500).json({
+      ok: false,
+      error: err?.message || "unknown_error_in_debug_state"
+    });
+  }
 });
 
 // Debug Decisions
 router.get("/debug/decisions", (req, res) => {
-  const limit = Math.max(1, Math.min(1000, parseInt(req.query.limit || "100", 10)));
+  const limit  = Math.max(1, Math.min(1000, parseInt(req.query.limit || "100", 10)));
   const symbol = (req.query.symbol || "").toUpperCase();
   const rows = state.decisions
     .filter(d => !symbol || d.symbol === symbol)
@@ -333,6 +350,14 @@ router.get("/debug/summary", (req, res) => {
     topRejectReasons: reasons
   });
 });
+
+// Global error handler (letzte Middleware vor dem Export/Mounten)
+router.use((err, req, res, next) => {
+  console.error("[GLOBAL ERROR]", err?.stack || err?.message || err);
+  res.status(500).json({ ok: false, error: err?.message || "internal_error" });
+});
+
+
 
 // ===================== WEBHOOK CORE =====================
 router.post("/webhook", async (req, res) => {
