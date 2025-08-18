@@ -76,6 +76,66 @@ const state = {
   decisions: [],               // ring buffer
   rejectReasons: new Map(),    // reason -> count
 };
+// === Day rotation / decision buffer ===
+function todayKeyUTC() {
+  const d = new Date();
+  return d.toISOString().slice(0, 10);
+}
+function rotateDayIfNeeded() {
+  const k = todayKeyUTC();
+  if (state.dayKey !== k) {
+    state.dayKey = k;
+    state.riskUsedUsd = 0;
+    state.tradesAccepted = 0;
+    state.tradesRejected = 0;
+    state.perSymbolLastTs.clear();
+    state.seenIds.clear();
+    state.decisions = [];
+    state.rejectReasons.clear();
+  }
+}
+function pushDecision(entry) {
+  state.decisions.push(entry);
+  if (state.decisions.length > DECISION_BUFFER) state.decisions.shift();
+}
+
+// === Log helpers ===
+function logReject(reason, ctx = {}) {
+  const t = new Date().toISOString();
+  const meta = [];
+  if (ctx.symbol) meta.push(ctx.symbol);
+  if (ctx.side)   meta.push(ctx.side.toUpperCase());
+  if (ctx.gridIndex !== undefined) meta.push(`#${ctx.gridIndex}`);
+  const metaStr = meta.length ? ` [${meta.join(" ")}]` : "";
+  console.log(`[REJECT] ${reason}${metaStr} @ ${t}`);
+}
+function logAccept(ctx = {}) {
+  const t = new Date().toISOString();
+  const { symbol, side, entry, sl, tp, rr } = ctx;
+  console.log(`[ACCEPT] ${side?.toUpperCase?.()} ${symbol} @${entry} SL ${sl} TP ${tp} RR=${rr} @ ${t}`);
+}
+
+// === Math/rounding utils ===
+function roundToStep(v, step) { if (!step || step <= 0) return v; return Math.round(v / step) * step; }
+function ceilToStep(v, step)  { if (!step || step <= 0) return v; return Math.ceil(v / step)  * step; }
+function floorToStep(v, step) { if (!step || step <= 0) return v; return Math.floor(v / step) * step; }
+function rr(entry, sl, tp, side) {
+  if ([entry, sl, tp].some(x => x == null || isNaN(x))) return null;
+  if (side === "buy")  return (tp - entry) / Math.max(1e-9, (entry - sl));
+  if (side === "sell") return (entry - tp) / Math.max(1e-9, (sl - entry));
+  return null;
+}
+function zscore(arr, len = 120) {
+  if (!Array.isArray(arr) || arr.length < len) return null;
+  const s = arr.slice(-len);
+  const m = s.reduce((a, b) => a + b, 0) / s.length;
+  const sd = Math.sqrt(s.reduce((a, b) => a + (b - m) * (b - m), 0) / s.length) || 1e-9;
+  return (s[s.length - 1] - m) / sd;
+}
+
+// (optional) gleich initialisieren, damit dayKey nicht null ist
+rotateDayIfNeeded();
+
 
 // ===================== [WS] WEBSOCKET CLIENT =====================
 let ws;
@@ -278,8 +338,6 @@ function symbolThrottled(symbol) {
   state.perSymbolLastTs.set(symbol, now);
   return false;
 }
-
-// ===================== ROUTES =====================
 
 // ===================== ROUTES =====================
 
