@@ -68,13 +68,8 @@ function requireSecret(req, res, next) {
   }
   next();
 }
-// ===================== TELEGRAM CONFIG & HELPERS =====================
-// .env:
-//   TELEGRAM_BOT_TOKEN = 123456789:AA...YourBotToken
-//   TELEGRAM_CHAT_ID   = 123456789 (deine Chat-ID oder Channel @name)
-const TELEGRAM_BOT_TOKEN = (process.env.TELEGRAM_BOT_TOKEN || "").trim();
-const TELEGRAM_CHAT_ID   = (process.env.TELEGRAM_CHAT_ID || "").trim();
-const TELEGRAM_ENABLED   = TELEGRAM_BOT_TOKEN.length > 0 && TELEGRAM_CHAT_ID.length > 0;
+// ===================== TELEGRAM (via ./telegram) =====================
+let tg; try { tg = require("./telegram"); } catch { tg = null; }
 
 // Einfache Senderoutine (Plain-Text ohne Markdown-Parsing = robust)
 async function sendTG(text) {
@@ -227,6 +222,8 @@ function zscore(arr, len = 120) {
   return (s[s.length - 1] - m) / sd;
 }
 
+
+
 // ===== PAPER: settle helper (schließt offene Paper-Trades bei SL/TP) =====
 function settlePaperForSymbol(symbol, mid) {
   if (!Number.isFinite(mid)) return;
@@ -242,16 +239,11 @@ function settlePaperForSymbol(symbol, mid) {
     const hitTP  = isBuy ? mid >= t.tp : mid <= t.tp;
     if (!hitSL && !hitTP) continue;
 
-    // Exit-Preis strikt auf SL/TP-Level (wie vorher)
     const exit = hitTP ? t.tp : t.sl;
-
-    // PnL in USD (wie vorher)
     const pnl  = (isBuy ? (exit - t.entry) : (t.entry - exit)) * t.qty;
 
-    // Wallet buchen (Realized PnL auf Balance)
     w.balanceUsd += pnl;
 
-    // Trade aus open[] entfernen und in closed[] verschieben
     w.openTrades.splice(i, 1);
     const closed = {
       ...t,
@@ -266,17 +258,12 @@ function settlePaperForSymbol(symbol, mid) {
       `[PAPER] Closed ${t.side.toUpperCase()} ${t.symbol} @${exit} (${closed.reason}) PnL=${pnl.toFixed(2)} USD`
     );
 
-    // OPTIONAL: Telegram-Notify, wenn tg.paperClosed verfügbar ist
-    try {
-      tg?.paperClosed?.(closed);
-    } catch (e) {
-      // niemals crashen lassen – Log reicht
+    // Telegram-Notify (aus telegram.js)
+    try { tg?.tradeClosed?.(closed); } catch (e) {
       console.error("[PAPER→TG] notify failed:", e?.message || e);
     }
   }
 }
-
-
 
 // ===================== [WS] WEBSOCKET CLIENT =====================
 let ws;
@@ -874,18 +861,19 @@ settlePaperForSymbol(symbol, mid);
     const slR   = filters.tickSize > 0 ? roundToStep(sl, filters.tickSize) : sl;
     const tpR   = filters.tickSize > 0 ? roundToStep(tp, filters.tickSize) : tp;
 
-    const riskPerUnit = side === "buy" ? (entry - slR) : (slR - entry);
-    const tradeRiskUsd = Math.max(0, riskPerUnit) * qty;
+  if (DAILY_RISK_BUDGET_USD > 0 && (state.riskUsedUsd + tradeRiskUsd) > DAILY_RISK_BUDGET_USD) {
+  state.tradesRejected++;
+  state.rejectReasons.set("DailyRiskBudget", (state.rejectReasons.get("DailyRiskBudget") || 0) + 1);
+  logReject("DailyRiskBudget", { symbol, side });
 
-    if (DAILY_RISK_BUDGET_USD > 0 && (state.riskUsedUsd + tradeRiskUsd) > DAILY_RISK_BUDGET_USD) {
-      state.tradesRejected++;
-      state.rejectReasons.set("DailyRiskBudget", (state.rejectReasons.get("DailyRiskBudget") || 0) + 1);
-      logReject("DailyRiskBudget", { symbol, side });
-      return res.json({
-        ok: true, decision: "REJECT", reason: "DailyRiskBudget",
-        riskUsedUsd: state.riskUsedUsd, tradeRiskUsd, limit: DAILY_RISK_BUDGET_USD
-      });
-    }
+  // Telegram: Budget-Hit
+  try { tg?.budgetHit?.({ riskUsedUsd: state.riskUsedUsd, tradeRiskUsd, limit: DAILY_RISK_BUDGET_USD }); } catch {}
+
+  return res.json({
+    ok: true, decision: "REJECT", reason: "DailyRiskBudget",
+    riskUsedUsd: state.riskUsedUsd, tradeRiskUsd, limit: DAILY_RISK_BUDGET_USD
+  });
+}
 
     // --- Finale Entscheidung ---
     const accept = acceptSenti;
@@ -944,14 +932,19 @@ if (accept) {
   };
   state.paperWallet.openTrades.push(trade);
   console.log(`[PAPER] Opened ${side.toUpperCase()} ${symbol} @${entry} | SL ${slR} TP ${tpR}`);
+
+  // Telegram: ACCEPT
+  try { tg?.tradeAccepted?.(payload.order, payload.indicators); } catch {}
 } else {
   state.tradesRejected++;
   for (const r of payload.reasonsRejected) {
     state.rejectReasons.set(r, (state.rejectReasons.get(r) || 0) + 1);
   }
   logReject(`Decision=${payload.decision}`, { symbol, side });
-}
 
+  // Optional: REJECT (falls zu „laut“, einfach diese Zeile löschen)
+  try { tg?.tradeRejected?.(payload.order, payload.reasonsRejected); } catch {}
+}
 
     // Puffer füllen
     pushDecision({
