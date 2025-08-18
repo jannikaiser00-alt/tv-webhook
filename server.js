@@ -483,6 +483,7 @@ router.get("/debug/ws", (req, res) => {
   };
   res.json(s);
 });
+
 // Debug Paper-Trading: Wallet + PnL
 router.get("/debug/paper", (req, res) => {
   try {
@@ -507,18 +508,19 @@ router.get("/debug/paper", (req, res) => {
       };
     });
 
-    const realized = state.paperWallet.closedTrades.reduce((a, c) => a + (c.pnl || 0), 0);
+    const realized   = state.paperWallet.closedTrades.reduce((a, c) => a + (c.pnl || 0), 0);
     const unrealized = open.reduce((a, c) => a + (c.uPnL || 0), 0);
 
     res.json({
-      balanceUsd: +state.paperWallet.balanceUsd.toFixed(2),
-      realizedPnL: +realized.toFixed(2),
-      unrealizedPnL: +unrealized.toFixed(2),
-      equityUsd: +(state.paperWallet.balanceUsd + realized + unrealized).toFixed(2),
-      openCount: open.length,
+      balanceUsd:     +state.paperWallet.balanceUsd.toFixed(2),
+      realizedPnL:    +realized.toFixed(2),
+      unrealizedPnL:  +unrealized.toFixed(2),
+      // ✅ Equity = Balance (inkl. realized) + unrealized
+      equityUsd:      +(state.paperWallet.balanceUsd + unrealized).toFixed(2),
+      openCount:      open.length,
       open,
-      closedCount: state.paperWallet.closedTrades.length,
-      closedLast50: state.paperWallet.closedTrades.slice(-50)
+      closedCount:    state.paperWallet.closedTrades.length,
+      closedLast50:   state.paperWallet.closedTrades.slice(-50)
     });
   } catch (err) {
     console.error("[/debug/paper] failed:", err?.stack || err?.message || err);
