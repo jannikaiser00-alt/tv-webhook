@@ -24,6 +24,10 @@ app.post("/webhook", async (req, res) => {
   if (!payload || !payload.symbol || !payload.side) {
     return res.status(400).send("❌ Ungültiges Format – symbol/side fehlt");
   }
+// Nicht handeln: reine Status/Ping/Pause-Kommandos -> keine Exchange-Calls
+if (payload.cmd) {
+  return res.status(200).json({ ok: true, kind: "ACK", cmd: payload.cmd });
+}
 
   try {
     const { symbol, side } = payload;
