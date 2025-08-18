@@ -281,6 +281,8 @@ function symbolThrottled(symbol) {
 
 // ===================== ROUTES =====================
 
+// ===================== ROUTES =====================
+
 // Health
 router.get("/healthz", (req, res) => {
   res.json({ ok: true, ts: new Date().toISOString(), version: VERSION });
@@ -299,7 +301,7 @@ router.get("/debug/env", (req, res) => {
   });
 });
 
-// Debug State (robust mit Fehlerlogging – nur EINMAL definieren!)
+// Debug State (robust, einmalig)
 router.get("/debug/state", (req, res) => {
   try {
     rotateDayIfNeeded();
@@ -351,12 +353,11 @@ router.get("/debug/summary", (req, res) => {
   });
 });
 
-// Global error handler (letzte Middleware vor dem Export/Mounten)
+// Global error handler (letzte Middleware vor dem Webhook/Export)
 router.use((err, req, res, next) => {
   console.error("[GLOBAL ERROR]", err?.stack || err?.message || err);
   res.status(500).json({ ok: false, error: err?.message || "internal_error" });
 });
-
 
 
 // ===================== WEBHOOK CORE =====================
