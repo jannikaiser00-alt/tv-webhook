@@ -8,6 +8,11 @@ const WebSocket = require("ws");
 
 const router = express.Router();
 
+// Body-Parser für JSON & URL-Encoded (damit req.body befüllt ist)
+router.use(express.json({ limit: "1mb" }));
+router.use(express.urlencoded({ extended: true }));
+
+
 // ===================== VERSION =====================
 const VERSION = (process.env.RENDER_GIT_COMMIT || "").slice(0, 7) || "local";
 
@@ -45,6 +50,24 @@ const FALLBACK_MIN_NOTIONAL = parseFloat(process.env.MIN_NOTIONAL_USD || "5");
 // Logging / Debug
 const LOG_DECISIONS         = (process.env.LOG_DECISIONS || "true").toLowerCase() === "true";
 const DECISION_BUFFER       = parseInt(process.env.DECISION_BUFFER || "200", 10);
+
+// Debug-Schutz (optional)
+function requireSecret(req, res, next) {
+  const authHeader = req.get("authorization") || "";
+  const fromBearer = authHeader.toLowerCase().startsWith("bearer ")
+    ? authHeader.slice(7).trim()
+    : "";
+  const clientSecret = (
+    req.get("x-tv-secret") ||
+    fromBearer ||
+    (req.query.secret || req.body?.secret || "")
+  ).toString().trim();
+
+  if (!TV_SECRET || clientSecret !== TV_SECRET) {
+    return res.status(401).json({ ok: false, error: "unauthorized_debug" });
+  }
+  next();
+}
 
 // ===================== HTTP CLIENT (mit Retry) =====================
 const http = axios.create({
@@ -415,7 +438,7 @@ router.get("/healthz", (req, res) => {
 });
 
 // Debug Env
-router.get("/debug/env", (req, res) => {
+router.get("/debug/env", requireSecret, (req, res) => {
   res.json({
     hasSecret: TV_SECRET.length > 0,
     minRR: MIN_RR, atrMult: ATR_MULT, interval: MARKET_INTERVAL,
@@ -428,7 +451,7 @@ router.get("/debug/env", (req, res) => {
 });
 
 // Debug State (robust, einmalig)
-router.get("/debug/state", (req, res) => {
+router.get("/debug/state", requireSecret, (req, res) => {
   try {
     rotateDayIfNeeded();
 
