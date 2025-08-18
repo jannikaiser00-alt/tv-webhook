@@ -4,6 +4,7 @@
 const express = require("express");
 const axios = require("axios");
 const axiosRetry = require("axios-retry").default;
+const WebSocket = require("ws");
 
 const router = express.Router();
 
@@ -60,7 +61,7 @@ axiosRetry(http, {
 });
 
 // ===================== CACHES =====================
-const candlesCache  = new Map(); // key: symbol_interval_limit -> { ts, data }
+const candlesCache  = new Map(); // key: symbol_interval -> { ts, data }
 const bookCache     = new Map(); // key: symbol -> { ts, data }
 const exchInfoCache = new Map(); // key: symbol -> { ts, tickSize, stepSize, minNotional }
 
@@ -76,70 +77,65 @@ const state = {
   rejectReasons: new Map(),    // reason -> count
 };
 
-function todayKeyUTC() {
-  const d = new Date();
-  return d.toISOString().slice(0, 10);
-}
-function rotateDayIfNeeded() {
-  const k = todayKeyUTC();
-  if (state.dayKey !== k) {
-    state.dayKey = k;
-    state.riskUsedUsd = 0;
-    state.tradesAccepted = 0;
-    state.tradesRejected = 0;
-    state.perSymbolLastTs.clear();
-    state.seenIds.clear();
-    state.decisions = [];
-    state.rejectReasons.clear();
-  }
-}
-function pushDecision(entry) {
-  state.decisions.push(entry);
-  if (state.decisions.length > DECISION_BUFFER) state.decisions.shift();
+// ===================== [WS] WEBSOCKET CLIENT =====================
+let ws;
+function startWS(symbol = "SOLUSDT", interval = MARKET_INTERVAL) {
+  const streams = [
+    `${symbol.toLowerCase()}@bookTicker`,
+    `${symbol.toLowerCase()}@kline_${interval}`
+  ].join("/");
+
+  const url = `wss://stream.binance.com:9443/stream?streams=${streams}`;
+  ws = new WebSocket(url);
+
+  ws.on("open", () => {
+    console.log(`[WS] Connected to Binance streams: ${streams}`);
+  });
+
+  ws.on("message", (msg) => {
+    try {
+      const parsed = JSON.parse(msg);
+      const data = parsed.data;
+
+      // BookTicker Event
+      if (data.e === "bookTicker") {
+        bookCache.set(symbol.toUpperCase(), {
+          ts: Date.now(),
+          data: { bid: parseFloat(data.b), ask: parseFloat(data.a) },
+        });
+      }
+
+      // Kline Event
+      if (data.e === "kline") {
+        const k = data.k;
+        const key = `${symbol.toUpperCase()}_${interval}`;
+        const out = {
+          highs: [parseFloat(k.h)],
+          lows: [parseFloat(k.l)],
+          closes: [parseFloat(k.c)],
+          lastClose: parseFloat(k.c),
+        };
+        candlesCache.set(key, { ts: Date.now(), data: out });
+      }
+    } catch (err) {
+      console.error("[WS ERROR]", err.message);
+    }
+  });
+
+  ws.on("close", () => {
+    console.log("[WS] Disconnected, retrying in 5s...");
+    setTimeout(() => startWS(symbol, interval), 5000);
+  });
+
+  ws.on("error", (err) => {
+    console.error("[WS ERROR]", err.message);
+    ws.close();
+  });
 }
 
-// =============== LOG HELPERS ===============
-function logReject(reason, ctx = {}) {
-  const t = new Date().toISOString();
-  const meta = [];
-  if (ctx.symbol) meta.push(ctx.symbol);
-  if (ctx.side)   meta.push(ctx.side.toUpperCase());
-  if (ctx.gridIndex !== undefined) meta.push(`#${ctx.gridIndex}`);
-  const metaStr = meta.length ? ` [${meta.join(" ")}]` : "";
-  console.log(`[REJECT] ${reason}${metaStr} @ ${t}`);
-}
-function logAccept(ctx = {}) {
-  const t = new Date().toISOString();
-  const { symbol, side, entry, sl, tp, rr } = ctx;
-  console.log(`[ACCEPT] ${side?.toUpperCase?.()} ${symbol} @${entry} SL ${sl} TP ${tp} RR=${rr} @ ${t}`);
-}
+// Start WebSocket beim Boot
+startWS("SOLUSDT", MARKET_INTERVAL);
 
-// ===================== UTILS =====================
-function roundToStep(v, step) {
-  if (!step || step <= 0) return v;
-  return Math.round(v / step) * step;
-}
-function ceilToStep(v, step) {
-  if (!step || step <= 0) return v;
-  return Math.ceil(v / step) * step;
-}
-function floorToStep(v, step) {
-  if (!step || step <= 0) return v;
-  return Math.floor(v / step) * step;
-}
-function rr(entry, sl, tp, side) {
-  if ([entry, sl, tp].some(x => x == null || isNaN(x))) return null;
-  if (side === "buy")  return (tp - entry) / Math.max(1e-9, (entry - sl));
-  if (side === "sell") return (entry - tp) / Math.max(1e-9, (sl - entry));
-  return null;
-}
-function zscore(arr, len = 120) {
-  if (!Array.isArray(arr) || arr.length < len) return null;
-  const s = arr.slice(-len);
-  const m = s.reduce((a, b) => a + b, 0) / s.length;
-  const sd = Math.sqrt(s.reduce((a, b) => a + (b - m) * (b - m), 0) / s.length) || 1e-9;
-  return (s[s.length - 1] - m) / sd;
-}
 
 // ===================== INDICATORS =====================
 function ema(values, len) {
