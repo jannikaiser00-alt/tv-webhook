@@ -806,6 +806,10 @@ settlePaperForSymbol(symbol, mid);
     const slR   = filters.tickSize > 0 ? roundToStep(sl, filters.tickSize) : sl;
     const tpR   = filters.tickSize > 0 ? roundToStep(tp, filters.tickSize) : tp;
 
+    const riskPerUnit   = side === "buy" ? (entry - slR) : (slR - entry);
+const tradeRiskUsd  = Math.max(0, riskPerUnit) * qty;
+
+
   if (DAILY_RISK_BUDGET_USD > 0 && (state.riskUsedUsd + tradeRiskUsd) > DAILY_RISK_BUDGET_USD) {
   state.tradesRejected++;
   state.rejectReasons.set("DailyRiskBudget", (state.rejectReasons.get("DailyRiskBudget") || 0) + 1);
