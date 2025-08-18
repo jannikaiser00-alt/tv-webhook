@@ -624,3 +624,9 @@ async function placeOrderAndBracketsBitunix({ side, symbol, qty, entry, sl, tp, 
   throw new Error("Bitunix adapter not implemented yet.");
 }
 */
+// ===================== EXPORTS =====================
+module.exports = {
+  fetchCandles,
+  fetchBookTicker
+};
+
