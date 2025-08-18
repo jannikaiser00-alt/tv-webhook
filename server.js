@@ -5,22 +5,24 @@ const express = require("express");
 const axios = require("axios");
 const axiosRetry = require("axios-retry").default;
 
-
-const app = express();
-app.use(express.json());
+const router = express.Router();
 
 // ===================== VERSION =====================
 const VERSION = (process.env.RENDER_GIT_COMMIT || "").slice(0, 7) || "local";
-console.log(`[BOOT] tv-webhook ${VERSION} starting…`);
 
 // ===================== ENV / KONFIG =====================
-const TV_SECRET        = (process.env.TV_SECRET || "").trim();        // muss zu Pine "webhookSecret" passen
-const MIN_RR           = parseFloat(process.env.MIN_RR || "3.0");      // Mindest-CRV 1:3
-const ATR_MULT         = parseFloat(process.env.ATR_MULT || "1.2");    // Fallback für SL-Ermittlung
-const MARKET_INTERVAL  = process.env.MARKET_INTERVAL || "15m";         // 1m/5m/15m/1h...
-const EXCHANGE_BASE    = process.env.EXCHANGE_BASE || "https://api.binance.com";
-const SENTI_MODE       = (process.env.SENTI_MODE || "strict").toLowerCase();     // 'strict'|'lenient'
+// Security / Behaviour
+const TV_SECRET        = (process.env.TV_SECRET || "").trim();     // muss zum Pine "webhookSecret" passen
+const SENTI_MODE       = (process.env.SENTI_MODE || "strict").toLowerCase(); // 'strict'|'lenient'
+
+// Risk / Targets
+const MIN_RR           = parseFloat(process.env.MIN_RR || "3.0");   // Mindest-CRV 1:3
+const ATR_MULT         = parseFloat(process.env.ATR_MULT || "1.2"); // Fallback-Distanz für SL
 const AUTO_ADJUST_TP   = (process.env.AUTO_ADJUST_TP || "true").toLowerCase() === "true";
+
+// Market / Data
+const EXCHANGE_BASE    = process.env.EXCHANGE_BASE || "https://api.binance.com";
+const MARKET_INTERVAL  = process.env.MARKET_INTERVAL || "15m";      // 1m/5m/15m/1h...
 const CANDLE_LIMIT     = parseInt(process.env.CANDLE_LIMIT || "400", 10);
 
 // Risk & Control
@@ -43,11 +45,11 @@ const FALLBACK_MIN_NOTIONAL = parseFloat(process.env.MIN_NOTIONAL_USD || "5");
 const LOG_DECISIONS         = (process.env.LOG_DECISIONS || "true").toLowerCase() === "true";
 const DECISION_BUFFER       = parseInt(process.env.DECISION_BUFFER || "200", 10);
 
-// HTTP Client mit Retry
+// ===================== HTTP CLIENT (mit Retry) =====================
 const http = axios.create({
   baseURL: EXCHANGE_BASE,
   timeout: 10000,
-  headers: { "User-Agent": "tv-webhook/1.0" }
+  headers: { "User-Agent": "tv-webhook/1.0" },
 });
 
 axiosRetry(http, {
@@ -57,12 +59,10 @@ axiosRetry(http, {
     !err.response || [418, 429, 500, 502, 503, 504].includes(err.response.status),
 });
 
-// ==================== STATE / SPEICHER ====================
-const state = {
-  dayKey: null,
-  riskUsedUsd: 0,
-  ...
-
+// ===================== CACHES =====================
+const candlesCache  = new Map(); // key: symbol_interval_limit -> { ts, data }
+const bookCache     = new Map(); // key: symbol -> { ts, data }
+const exchInfoCache = new Map(); // key: symbol -> { ts, tickSize, stepSize, minNotional }
 
 // ===================== STATE / SPEICHER =====================
 const state = {
@@ -80,7 +80,6 @@ function todayKeyUTC() {
   const d = new Date();
   return d.toISOString().slice(0, 10);
 }
-
 function rotateDayIfNeeded() {
   const k = todayKeyUTC();
   if (state.dayKey !== k) {
@@ -94,19 +93,13 @@ function rotateDayIfNeeded() {
     state.rejectReasons.clear();
   }
 }
-
 function pushDecision(entry) {
   state.decisions.push(entry);
   if (state.decisions.length > DECISION_BUFFER) state.decisions.shift();
 }
 
 // =============== LOG HELPERS ===============
-function logInfo(msg, extra = undefined) {
-  if (extra !== undefined) console.log(msg, extra);
-  else console.log(msg);
-}
 function logReject(reason, ctx = {}) {
-  // kompaktes Einzeilen-Log für abgelehnte / nicht relevante Events
   const t = new Date().toISOString();
   const meta = [];
   if (ctx.symbol) meta.push(ctx.symbol);
@@ -148,62 +141,14 @@ function zscore(arr, len = 120) {
   return (s[s.length - 1] - m) / sd;
 }
 
-// ===================== EXCHANGE DATA (Binance public) =====================
-async function fetchCandles(symbol = "SOLUSDT", interval = "15m", limit = 400) {
-  const url = `${EXCHANGE_BASE}/api/v3/klines?symbol=${symbol.toUpperCase()}&interval=${interval}&limit=${limit}`;
-  const { data } = await axios.get(url, { timeout: 10000 });
-  const highs  = data.map(d => parseFloat(d[2]));
-  const lows   = data.map(d => parseFloat(d[3]));
-  const closes = data.map(d => parseFloat(d[4]));
-  return { highs, lows, closes, lastClose: closes[closes.length - 1] };
-}
-
-async function fetchBookTicker(symbol = "SOLUSDT") {
-  const url = `${EXCHANGE_BASE}/api/v3/ticker/bookTicker?symbol=${symbol.toUpperCase()}`;
-  const { data } = await axios.get(url, { timeout: 7000 });
-  return { bid: parseFloat(data.bidPrice), ask: parseFloat(data.askPrice) };
-}
-
-const exchInfoCache = new Map(); // symbol -> { tickSize, stepSize, minNotional, ts }
-
-async function fetchSymbolFilters(symbol = "SOLUSDT") {
-const { data } = await http.get(`/api/v3/klines`, {
-  params: { symbol: symbol.toUpperCase(), interval, limit }
-});
-
-
-  const url = `${EXCHANGE_BASE}/api/v3/exchangeInfo?symbol=${symbol.toUpperCase()}`;
-  try {
-    const { data } = await axios.get(url, { timeout: 8000 });
-    const s = data.symbols && data.symbols[0];
-    if (!s || !s.filters) throw new Error("exchangeInfo: symbol not found");
-
-    const { data } = await http.get(`/api/v3/ticker/bookTicker`, {
-  params: { symbol: symbol.toUpperCase() }
-});
-    
-    for (const f of s.filters) {
-      if (f.filterType === "PRICE_FILTER") tickSize = parseFloat(f.tickSize);
-      if (f.filterType === "LOT_SIZE")     stepSize = parseFloat(f.stepSize);
-      if (f.filterType === "MIN_NOTIONAL") minNotional = parseFloat(f.minNotional);
-    }
-    const out = { tickSize, stepSize, minNotional, ts: now };
-    exchInfoCache.set(symbol, out);
-    return out;
-  } catch {
-    const out = { tickSize: FALLBACK_PRICE_TICK, stepSize: FALLBACK_LOT_STEP, minNotional: FALLBACK_MIN_NOTIONAL, ts: now };
-    exchInfoCache.set(symbol, out);
-    return out;
-  }
-}
-const { data } = await http.get(`/api/v3/exchangeInfo`, {
-  params: { symbol: symbol.toUpperCase() }
-});
-
+// ===================== INDICATORS =====================
+function ema(values, len) {
+  if (!values || values.length < len) return null;
+  const k = 2 / (len + 1);
+  let e = values[0];
   for (let i = 1; i < values.length; i++) e = values[i] * k + e * (1 - k);
   return e;
 }
-
 function rsi(closes, len = 14) {
   if (!closes || closes.length < len + 1) return null;
   let gains = 0, losses = 0;
@@ -225,7 +170,6 @@ function rsi(closes, len = 14) {
   }
   return r;
 }
-
 function atr(highs, lows, closes, len = 14) {
   if (!highs || highs.length < len + 1) return null;
   const trs = [];
@@ -239,7 +183,6 @@ function atr(highs, lows, closes, len = 14) {
   for (let i = len; i < trs.length; i++) a = (a * (len - 1) + trs[i]) / len;
   return { atr: a, trs };
 }
-
 function sentimentScore({ closes, highs, lows }) {
   const last200 = closes.slice(-200);
   const ema50  = ema(last200, 50);
@@ -258,23 +201,80 @@ function sentimentScore({ closes, highs, lows }) {
   return { ema50, ema200, rsi14, atr14, zAtr, last, upTrend, downTrend, rsiOKLong, rsiOKShort };
 }
 
+// ===================== EXCHANGE DATA (Binance public) =====================
+async function fetchCandles(symbol = "SOLUSDT", interval = "15m", limit = 400) {
+  const key = `${symbol.toUpperCase()}_${interval}_${limit}`;
+  const cached = candlesCache.get(key);
+  if (cached && Date.now() - cached.ts < 15_000) return cached.data; // 15s TTL
+
+  const { data } = await http.get("/api/v3/klines", {
+    params: { symbol: symbol.toUpperCase(), interval, limit },
+  });
+  const highs  = data.map(d => parseFloat(d[2]));
+  const lows   = data.map(d => parseFloat(d[3]));
+  const closes = data.map(d => parseFloat(d[4]));
+  const out = { highs, lows, closes, lastClose: closes[closes.length - 1] };
+
+  candlesCache.set(key, { ts: Date.now(), data: out });
+  return out;
+}
+async function fetchBookTicker(symbol = "SOLUSDT") {
+  const s = symbol.toUpperCase();
+  const cached = bookCache.get(s);
+  if (cached && Date.now() - cached.ts < 5_000) return cached.data; // 5s TTL
+
+  const { data } = await http.get("/api/v3/ticker/bookTicker", {
+    params: { symbol: s },
+  });
+  const out = { bid: parseFloat(data.bidPrice), ask: parseFloat(data.askPrice) };
+  bookCache.set(s, { ts: Date.now(), data: out });
+  return out;
+}
+async function fetchSymbolFilters(symbol = "SOLUSDT") {
+  const s = symbol.toUpperCase();
+  const cached = exchInfoCache.get(s);
+  const now = Date.now();
+  if (cached && now - cached.ts < 60_000) return cached; // 60s TTL
+
+  try {
+    const { data } = await http.get("/api/v3/exchangeInfo", { params: { symbol: s } });
+    const info = data.symbols && data.symbols[0];
+    if (!info || !info.filters) throw new Error("exchangeInfo: symbol not found");
+
+    let tickSize = FALLBACK_PRICE_TICK;
+    let stepSize = FALLBACK_LOT_STEP;
+    let minNotional = FALLBACK_MIN_NOTIONAL;
+
+    for (const f of info.filters) {
+      if (f.filterType === "PRICE_FILTER") tickSize = parseFloat(f.tickSize);
+      if (f.filterType === "LOT_SIZE")     stepSize = parseFloat(f.stepSize);
+      if (f.filterType === "MIN_NOTIONAL") minNotional = parseFloat(f.minNotional);
+    }
+
+    const out = { tickSize, stepSize, minNotional, ts: now };
+    exchInfoCache.set(s, out);
+    return out;
+  } catch {
+    const out = { tickSize: FALLBACK_PRICE_TICK, stepSize: FALLBACK_LOT_STEP, minNotional: FALLBACK_MIN_NOTIONAL, ts: now };
+    exchInfoCache.set(s, out);
+    return out;
+  }
+}
+
 // ===================== SAFETY / HOUSEKEEPING =====================
 function stale(tsMs) {
   if (!tsMs || !isFinite(tsMs)) return false;
   const age = Date.now() - Number(tsMs);
   return age > ACCEPT_OLD_MS;
 }
-
 function seenBefore(id, ttl = DUP_TTL_MS) {
   if (!id) return false;
   const now = Date.now();
-  // Cleanup alte IDs
   for (const [k, v] of state.seenIds) if (now - v > ttl) state.seenIds.delete(k);
   if (state.seenIds.has(id)) return true;
   state.seenIds.set(id, now);
   return false;
 }
-
 function symbolThrottled(symbol) {
   const now = Date.now();
   const last = state.perSymbolLastTs.get(symbol) || 0;
@@ -283,12 +283,14 @@ function symbolThrottled(symbol) {
   return false;
 }
 
-// ===================== HEALTH / DEBUG =====================
-app.get("/healthz", (req, res) => {
+// ===================== ROUTES =====================
+// Health
+router.get("/healthz", (req, res) => {
   res.json({ ok: true, ts: new Date().toISOString(), version: VERSION });
 });
 
-app.get("/debug/env", (req, res) => {
+// Debug Env
+router.get("/debug/env", (req, res) => {
   res.json({
     hasSecret: TV_SECRET.length > 0,
     minRR: MIN_RR, atrMult: ATR_MULT, interval: MARKET_INTERVAL,
@@ -300,7 +302,8 @@ app.get("/debug/env", (req, res) => {
   });
 });
 
-app.get("/debug/state", (req, res) => {
+// Debug State
+router.get("/debug/state", (req, res) => {
   rotateDayIfNeeded();
   res.json({
     dayKey: state.dayKey,
@@ -311,8 +314,8 @@ app.get("/debug/state", (req, res) => {
   });
 });
 
-// Letzte Entscheidungen (für die volle Kontrolle)
-app.get("/debug/decisions", (req, res) => {
+// Debug Decisions
+router.get("/debug/decisions", (req, res) => {
   const limit = Math.max(1, Math.min(1000, parseInt(req.query.limit || "100", 10)));
   const symbol = (req.query.symbol || "").toUpperCase();
   const rows = state.decisions
@@ -321,8 +324,8 @@ app.get("/debug/decisions", (req, res) => {
   res.json({ count: rows.length, rows });
 });
 
-// Tages‑Summary (Anzahl, Gründe)
-app.get("/debug/summary", (req, res) => {
+// Debug Summary
+router.get("/debug/summary", (req, res) => {
   const reasons = Array.from(state.rejectReasons.entries())
     .sort((a, b) => b[1] - a[1])
     .map(([reason, count]) => ({ reason, count }));
@@ -336,11 +339,10 @@ app.get("/debug/summary", (req, res) => {
 });
 
 // ===================== WEBHOOK CORE =====================
-app.post("/webhook", async (req, res) => {
+router.post("/webhook", async (req, res) => {
   try {
     rotateDayIfNeeded();
 
-    // Body vorab lesen (für Logging bei Fehlern)
     const pRaw = req.body || {};
 
     // --- Secret prüfen ---
@@ -366,12 +368,12 @@ app.post("/webhook", async (req, res) => {
       return res.status(401).json({ ok: false, error: "secret_mismatch" });
     }
 
-    // --- PING / STATUS (frühe Rückgabe, "nicht relevant" fürs Trading) ---
+    // --- PING / STATUS (frühe Rückgabe) ---
     const cmd = (pRaw.cmd || "").toLowerCase();
     const reasonFlag = (pRaw.reason || "").toLowerCase();
     if (cmd === "ping" || cmd === "status" || reasonFlag === "ping" || reasonFlag === "status") {
       const symbolPing = (pRaw.symbol || "SOLUSDT").toUpperCase();
-      console.log(`[INFO] Heartbeat/Status erhalten (nicht handelbar): ${symbolPing} @ ${new Date().toISOString()}`);
+      console.log(`[INFO] Heartbeat/Status: ${symbolPing} @ ${new Date().toISOString()}`);
       return res.json({
         ok: true,
         kind: "PING_ACK",
@@ -385,9 +387,8 @@ app.post("/webhook", async (req, res) => {
         }
       });
     }
-    // ---------------------------------------------------------------------
 
-    // ab hier nur noch echte Trade-Signale
+    // --- Pflichtfelder / Parsing ---
     const side   = (pRaw.side || "").toLowerCase();     // buy/sell
     const symbol = (pRaw.symbol || "SOLUSDT").toUpperCase();
     const px     = Number(pRaw.px);
@@ -441,7 +442,7 @@ app.post("/webhook", async (req, res) => {
       return res.json({ ok: true, decision: "REJECT", reason: "SpreadTooWide", spreadBps, limitBps: SPREAD_MAX_BPS });
     }
 
-    // --- Volatility Brake (ATR Z‑Score) ---
+    // --- Volatility Brake (ATR Z-Score) ---
     if (senti.zAtr != null && senti.zAtr > Z_ATR_MAX) {
       state.tradesRejected++;
       state.rejectReasons.set("VolSpike", (state.rejectReasons.get("VolSpike") || 0) + 1);
@@ -478,7 +479,7 @@ app.post("/webhook", async (req, res) => {
       }
     }
 
-    // --- RR prüfen/erzwingen ---
+    // --- RR prüfen/erzwingen (≥ MIN_RR) ---
     let rrNow = rr(px, sl, tp, side);
     let rrAdjusted = false;
     if (rrNow == null) {
@@ -492,6 +493,7 @@ app.post("/webhook", async (req, res) => {
       rrAdjusted = true;
     }
 
+    // --- Sentiment-Gates ---
     const trendOK   = (side === "buy") ? senti.upTrend  : senti.downTrend;
     const rsiOK     = (side === "buy") ? senti.rsiOKLong: senti.rsiOKShort;
     const rrOK      = rrNow >= MIN_RR;
@@ -612,7 +614,7 @@ app.post("/webhook", async (req, res) => {
       zAtr: payload.indicators.zAtr
     });
 
-    // Menschlich lesbares Einzeilen‑Log (detailliert)
+    // Menschlich lesbares Einzeilen-Log
     if (LOG_DECISIONS) {
       const tag = accept ? "ACCEPT ✅" : "REJECT ❌";
       const reasonTxt = payload.reasonsRejected.length ? ` | ${payload.reasonsRejected.join(",")}` : "";
@@ -621,34 +623,18 @@ app.post("/webhook", async (req, res) => {
       );
     }
 
-    // >>> HIER später: nur bei accept echte Order an Exchange senden
-    // if (accept) await placeOrderAndBracketsBitunix({ ... }).catch(e => payload.exchangeError = e.message || String(e));
-
     return res.json(payload);
-
   } catch (err) {
     console.error("[WEBHOOK] error", err.response?.data || err.message);
     return res.status(500).json({ ok: false, error: err.response?.data || err.message, version: VERSION });
   }
 });
 
-// ===================== START =====================
-
-/* ===================== BITUNIX-ADAPTER (Skizze) =====================
-
-async function placeOrderAndBracketsBitunix({ side, symbol, qty, entry, sl, tp, postOnly = true }) {
-  // TODO:
-  // 1) Signatur / API-Key/Secret über ENV laden (BITUNIX_KEY, BITUNIX_SECRET)
-  // 2) Maker-Only Limit-Order (postOnly) für Entry
-  // 3) OCO/Brackets: Stop-Loss + Take-Profit reduce-only verknüpfen
-  // 4) Retries mit Exponential Backoff
-  // 5) Idempotenz mit ClientOrderId = id (vom Alert)
-  throw new Error("Bitunix adapter not implemented yet.");
-}
-*/
 // ===================== EXPORTS =====================
 module.exports = {
+  router,
+  // Optional: für Tests/Monitoring exportieren
   fetchCandles,
-  fetchBookTicker
+  fetchBookTicker,
+  fetchSymbolFilters,
 };
-
