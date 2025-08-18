@@ -71,23 +71,6 @@ function requireSecret(req, res, next) {
 // ===================== TELEGRAM (via ./telegram) =====================
 let tg; try { tg = require("./telegram"); } catch { tg = null; }
 
-// Einfache Senderoutine (Plain-Text ohne Markdown-Parsing = robust)
-async function sendTG(text) {
-  if (!TELEGRAM_ENABLED) return;
-  try {
-    await axios.post(
-      `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`,
-      {
-        chat_id: TELEGRAM_CHAT_ID,
-        text,
-        disable_web_page_preview: true
-      },
-      { timeout: 10000 }
-    );
-  } catch (e) {
-    console.error("[TG] send failed:", e?.response?.data || e.message);
-  }
-}
 
 // Einheitliche Kurz-API für unsere Events
 const tg = {
