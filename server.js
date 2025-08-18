@@ -43,6 +43,29 @@ const FALLBACK_MIN_NOTIONAL = parseFloat(process.env.MIN_NOTIONAL_USD || "5");
 const LOG_DECISIONS         = (process.env.LOG_DECISIONS || "true").toLowerCase() === "true";
 const DECISION_BUFFER       = parseInt(process.env.DECISION_BUFFER || "200", 10);
 
+const DECISION_BUFFER = parseInt(process.env.DECISION_BUFFER || "200", 10);
+
+// HTTP Client mit Retry
+const http = axios.create({
+  baseURL: EXCHANGE_BASE,
+  timeout: 10000,
+  headers: { "User-Agent": "tv-webhook/1.0" }
+});
+
+axiosRetry(http, {
+  retries: 3,
+  retryDelay: axiosRetry.exponentialDelay,
+  retryCondition: (err) =>
+    !err.response || [418, 429, 500, 502, 503, 504].includes(err.response.status),
+});
+
+// ==================== STATE / SPEICHER ====================
+const state = {
+  dayKey: null,
+  riskUsedUsd: 0,
+  ...
+
+
 // ===================== STATE / SPEICHER =====================
 const state = {
   dayKey: null,                // "YYYY-MM-DD" (UTC)
