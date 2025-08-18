@@ -713,46 +713,6 @@ router.post("/webhook", async (req, res) => {
     return res.status(500).json({ ok: false, error: err.response?.data || err.message, version: VERSION });
   }
 });
-// ===================== DEBUG ROUTES =====================
-router.get("/debug/state", (req, res) => {
-  try {
-    res.json(state);
-  } catch (err) {
-    console.error("[DEBUG STATE ERROR]", err);
-    res.status(500).send("Internal Server Error");
-  }
-});
-
-router.get("/debug/env", (req, res) => {
-  try {
-    res.json({
-      minRR: MIN_RR,
-      atrMult: ATR_MULT,
-      autoAdjustTP: AUTO_ADJUST_TP,
-      dailyRiskBudget: DAILY_RISK_BUDGET_USD,
-      maxTradesPerDay: MAX_TRADES_PER_DAY,
-      acceptOldMs: ACCEPT_OLD_MS,
-      dupTtlMs: DUP_TTL_MS,
-      minMsBetweenTrades: MIN_MS_BETWEEN_TRADES,
-      spreadMaxBps: SPREAD_MAX_BPS,
-      zAtrMax: Z_ATR_MAX,
-      fallbackPriceTick: FALLBACK_PRICE_TICK,
-      fallbackLotStep: FALLBACK_LOT_STEP,
-      fallbackMinNotional: FALLBACK_MIN_NOTIONAL,
-      logDecisions: LOG_DECISIONS,
-      decisionBuffer: DECISION_BUFFER,
-      version: VERSION,
-    });
-  } catch (err) {
-    console.error("[DEBUG ENV ERROR]", err);
-    res.status(500).send("Internal Server Error");
-  }
-});
-
-router.get("/healthz", (req, res) => {
-  res.json({ ok: true, ts: new Date().toISOString(), version: VERSION });
-});
-
 
 // ===================== EXPORTS =====================
 module.exports = {
