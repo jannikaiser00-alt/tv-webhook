@@ -427,6 +427,19 @@ router.get("/debug/summary", (req, res) => {
   });
 });
 
+// Debug WS (Status des WebSocket-Streams prüfen)
+router.get("/debug/ws", (req, res) => {
+  const s = {
+    ready: ws && ws.readyState === 1,
+    state: ws ? ws.readyState : null,
+    haveBook: Array.from(bookCache.keys()),
+    haveCandles: Array.from(candlesCache.keys()),
+    ts: new Date().toISOString()
+  };
+  res.json(s);
+});
+
+
 // Global error handler (letzte Middleware vor dem Webhook/Export)
 router.use((err, req, res, next) => {
   console.error("[GLOBAL ERROR]", err?.stack || err?.message || err);
