@@ -259,16 +259,28 @@ function sentimentScore({ closes, highs, lows }) {
 
 // ===================== EXCHANGE DATA (Binance public) =====================
 
-async function fetchCandles(symbol = "SOLUSDT", interval = "15m", limit = 400) {
-  // ⚠️ Wichtig: Key ohne _${limit}, damit der WebSocket-Cache getroffen wird!
+async function fetchCandles(symbol = "SOLUSDT", interval = "15m", limit = CANDLE_LIMIT) {
+  // 👉 Key ohne limit, damit WS-Stream immer trifft
   const key = `${symbol.toUpperCase()}_${interval}`;
   const cached = candlesCache.get(key);
-  if (cached && Date.now() - cached.ts < 15_000) return cached.data; // WS-Cache nutzen
 
-  // Fallback: HTTP (wenn WS noch nicht geliefert hat)
+  // Mindestlänge für Indikatoren: wir brauchen History (EMA200/ATR/RSI)
+  const NEED = Math.max(120, Math.min(400, Number(limit) || 400));
+
+  // Nur benutzen, wenn WS-Cache genug Historie hat
+  if (cached && Date.now() - cached.ts < 15_000) {
+    const cd = cached.data || {};
+    const have = Array.isArray(cd.closes) ? cd.closes.length : 0;
+    if (have >= NEED) return cd;
+    // sonst: bewusst auf HTTP-Historie fallen
+  }
+
+  // Fallback: vollständige Historie via HTTP
+  const httpLimit = Math.max(NEED, 200); // etwas großzügig, damit EMA200 sicher geht
   const { data } = await http.get("/api/v3/klines", {
-    params: { symbol: symbol.toUpperCase(), interval, limit },
+    params: { symbol: symbol.toUpperCase(), interval, limit: httpLimit },
   });
+
   const highs  = data.map(d => parseFloat(d[2]));
   const lows   = data.map(d => parseFloat(d[3]));
   const closes = data.map(d => parseFloat(d[4]));
