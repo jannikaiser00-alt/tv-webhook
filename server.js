@@ -141,6 +141,43 @@ function zscore(arr, len = 120) {
   return (s[s.length - 1] - m) / sd;
 }
 
+// ===== PAPER: settle helper (schließt offene Paper-Trades bei SL/TP) =====
+function settlePaperForSymbol(symbol, mid) {
+  if (!Number.isFinite(mid)) return;
+  const w = state.paperWallet;
+  if (!w || !Array.isArray(w.openTrades)) return;
+
+  for (let i = w.openTrades.length - 1; i >= 0; i--) {
+    const t = w.openTrades[i];
+    if (t.symbol !== symbol) continue;
+
+    const hitSL = t.side === "buy"  ? mid <= t.sl : mid >= t.sl;
+    const hitTP = t.side === "buy"  ? mid >= t.tp : mid <= t.tp;
+    if (!hitSL && !hitTP) continue;
+
+    const exit = hitTP ? t.tp : t.sl;
+    const pnl  = (t.side === "buy" ? (exit - t.entry) : (t.entry - exit)) * t.qty;
+
+    // Wallet buchen
+    w.balanceUsd += pnl;
+
+    // Trade schließen
+    w.openTrades.splice(i, 1);
+    w.closedTrades.push({
+      ...t,
+      exit,
+      tsClose: Date.now(),
+      reason: hitTP ? "TP" : "SL",
+      pnl
+    });
+
+    console.log(
+      `[PAPER] Closed ${t.side.toUpperCase()} ${t.symbol} @${exit} (${hitTP ? "TP" : "SL"}) PnL=${pnl.toFixed(2)} USD`
+    );
+  }
+}
+
+
 // (optional) gleich initialisieren, damit dayKey nicht null ist
 rotateDayIfNeeded();
 
@@ -551,6 +588,8 @@ router.post("/webhook", async (req, res) => {
     // --- Spread Gate ---
     const spread = Math.max(0, (book.ask - book.bid));
     const mid    = (book.ask + book.bid) / 2;
+    // Paper-Trades für dieses Symbol mit aktuellem Mid-Preis abgleichen
+settlePaperForSymbol(symbol, mid);
     const spreadBps = mid > 0 ? (spread / mid) * 1e4 : 9999;
     if (spreadBps > SPREAD_MAX_BPS) {
       state.tradesRejected++;
