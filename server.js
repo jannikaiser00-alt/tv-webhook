@@ -72,44 +72,6 @@ function requireSecret(req, res, next) {
 let tg; try { tg = require("./telegram"); } catch { tg = null; }
 
 
-// Einheitliche Kurz-API für unsere Events
-const tg = {
-  wsUp: (streams) => sendTG(`🟢 WS connected: ${streams}`),
-  wsDown: () => sendTG(`🔴 WS disconnected — reconnecting...`),
-
-  orderAccept: (payload) => {
-    const o = payload.order || {};
-    const lines = [
-      `✅ ACCEPT ${o.side?.toUpperCase?.()} ${o.symbol}`,
-      `@ ${o.entry} | SL ${o.sl} | TP ${o.tp} | RR ${o.rr}`,
-      `Qty ${o.qty} | Notional ${o.notional} | Risk $${o.riskUsd}`
-    ];
-    return sendTG(lines.join("\n"));
-  },
-
-  orderReject: ({ side, symbol, entry, reasons }) => {
-    const lines = [
-      `❌ REJECT ${side?.toUpperCase?.()} ${symbol}`,
-      `@ ${entry}`,
-      `Reason(s): ${(reasons && reasons.length) ? reasons.join(", ") : "n/a"}`
-    ];
-    return sendTG(lines.join("\n"));
-  },
-
-  paperClosed: (t) => {
-    const emoji = t.reason === "TP" ? "🥳" : "⚠️";
-    const sign  = t.pnl >= 0 ? "+" : "";
-    const lines = [
-      `${emoji} PAPER CLOSED ${t.side.toUpperCase()} ${t.symbol}`,
-      `Entry ${t.entry} → Exit ${t.exit} (${t.reason})`,
-      `PnL ${sign}${t.pnl.toFixed(2)} USD`
-    ];
-    return sendTG(lines.join("\n"));
-  }
-};
-
-
-
 // ===================== HTTP CLIENT (mit Retry) =====================
 const http = axios.create({
   baseURL: EXCHANGE_BASE,
