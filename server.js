@@ -535,11 +535,22 @@ router.get("/debug/paper", (req, res) => {
   }
 });
 
-
-// Global error handler (letzte Middleware vor dem Webhook/Export)
-router.use((err, req, res, next) => {
-  console.error("[GLOBAL ERROR]", err?.stack || err?.message || err);
-  res.status(500).json({ ok: false, error: err?.message || "internal_error" });
+// Debug Paper-Trading: Wallet resetten (POST, optional ?balance=12345)
+router.post("/debug/paper/reset", (req, res) => {
+  try {
+    const start = Number(req.query.balance ?? req.body?.balance ?? 10000);
+    state.paperWallet.balanceUsd = Number.isFinite(start) ? start : 10000;
+    state.paperWallet.openTrades = [];
+    state.paperWallet.closedTrades = [];
+    return res.json({
+      ok: true,
+      balanceUsd: +state.paperWallet.balanceUsd.toFixed(2),
+      message: "paper wallet reset"
+    });
+  } catch (err) {
+    console.error("[/debug/paper/reset] failed:", err?.stack || err?.message || err);
+    return res.status(500).json({ ok: false, error: err?.message || "paper_reset_failed" });
+  }
 });
 
 
@@ -852,6 +863,13 @@ if (accept) {
     return res.status(500).json({ ok: false, error: err.response?.data || err.message, version: VERSION });
   }
 });
+
+// Global error handler (ganz am Ende platzieren!)
+router.use((err, req, res, next) => {
+  console.error("[GLOBAL ERROR]", err?.stack || err?.message || err);
+  res.status(500).json({ ok: false, error: err?.message || "internal_error" });
+});
+
 
 // ===================== EXPORTS =====================
 module.exports = {
