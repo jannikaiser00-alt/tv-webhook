@@ -708,18 +708,34 @@ router.post("/webhook", async (req, res) => {
       ts: Date.now()
     };
 
-    // --- Accounting / State Update + Decision Log ---
-    if (accept) {
-      state.tradesAccepted++;
-      state.riskUsedUsd += tradeRiskUsd;
-      logAccept({ symbol, side, entry, sl: slR, tp: tpR, rr: payload.order.rr });
-    } else {
-      state.tradesRejected++;
-      for (const r of payload.reasonsRejected) {
-        state.rejectReasons.set(r, (state.rejectReasons.get(r) || 0) + 1);
-      }
-      logReject(`Decision=${payload.decision}`, { symbol, side });
-    }
+   // --- Accounting / State Update + Decision Log ---
+if (accept) {
+  state.tradesAccepted++;
+  state.riskUsedUsd += tradeRiskUsd;
+  logAccept({ symbol, side, entry, sl: slR, tp: tpR, rr: payload.order.rr });
+
+  // === PAPER SIMULATION ===
+  const trade = {
+    id,
+    side,
+    symbol,
+    entry,
+    sl: slR,
+    tp: tpR,
+    qty,
+    notional: qty * entry,
+    tsOpen: Date.now()
+  };
+  state.paperWallet.openTrades.push(trade);
+  console.log(`[PAPER] Opened ${side.toUpperCase()} ${symbol} @${entry} | SL ${slR} TP ${tpR}`);
+} else {
+  state.tradesRejected++;
+  for (const r of payload.reasonsRejected) {
+    state.rejectReasons.set(r, (state.rejectReasons.get(r) || 0) + 1);
+  }
+  logReject(`Decision=${payload.decision}`, { symbol, side });
+}
+
 
     // Puffer füllen
     pushDecision({
