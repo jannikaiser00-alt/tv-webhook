@@ -196,46 +196,53 @@ function startWS(symbol = "SOLUSDT", interval = MARKET_INTERVAL) {
   ws.on("open", () => {
     console.log(`[WS] Connected to Binance streams: ${streams}`);
   });
+ws.on("message", (msg) => {
+  try {
+    const parsed = JSON.parse(msg);
+    const data = parsed.data;
 
-  ws.on("message", (msg) => {
-    try {
-      const parsed = JSON.parse(msg);
-      const data = parsed.data;
+    // BookTicker Event
+    if (data.e === "bookTicker") {
+      const s   = symbol.toUpperCase();
+      const bid = parseFloat(data.b);
+      const ask = parseFloat(data.a);
 
-      // BookTicker Event
-      if (data.e === "bookTicker") {
-        bookCache.set(symbol.toUpperCase(), {
-          ts: Date.now(),
-          data: { bid: parseFloat(data.b), ask: parseFloat(data.a) },
-        });
-      }
+      bookCache.set(s, {
+        ts: Date.now(),
+        data: { bid, ask },
+      });
 
-      // Kline Event
-      if (data.e === "kline") {
-        const k = data.k;
-        const key = `${symbol.toUpperCase()}_${interval}`;
-        const out = {
-          highs: [parseFloat(k.h)],
-          lows: [parseFloat(k.l)],
-          closes: [parseFloat(k.c)],
-          lastClose: parseFloat(k.c),
-        };
-        candlesCache.set(key, { ts: Date.now(), data: out });
-      }
-    } catch (err) {
-      console.error("[WS ERROR]", err.message);
+      // ➜ Realtime: Paper-Trades mit aktuellem Mid-Preis prüfen & ggf. schließen
+      const mid = (bid + ask) / 2;
+      settlePaperForSymbol(s, mid);
     }
-  });
 
-  ws.on("close", () => {
-    console.log("[WS] Disconnected, retrying in 5s...");
-    setTimeout(() => startWS(symbol, interval), 5000);
-  });
-
-  ws.on("error", (err) => {
+    // Kline Event
+    if (data.e === "kline") {
+      const k = data.k;
+      const key = `${symbol.toUpperCase()}_${interval}`;
+      const out = {
+        highs: [parseFloat(k.h)],
+        lows: [parseFloat(k.l)],
+        closes: [parseFloat(k.c)],
+        lastClose: parseFloat(k.c),
+      };
+      candlesCache.set(key, { ts: Date.now(), data: out });
+    }
+  } catch (err) {
     console.error("[WS ERROR]", err.message);
-    ws.close();
-  });
+  }
+});
+
+ws.on("close", () => {
+  console.log("[WS] Disconnected, retrying in 5s...");
+  setTimeout(() => startWS(symbol, interval), 5000);
+});
+
+ws.on("error", (err) => {
+  console.error("[WS ERROR]", err.message);
+  ws.close();
+});
 }
 
 // Start WebSocket beim Boot
