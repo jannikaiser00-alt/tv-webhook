@@ -258,11 +258,14 @@ function sentimentScore({ closes, highs, lows }) {
 }
 
 // ===================== EXCHANGE DATA (Binance public) =====================
-async function fetchCandles(symbol = "SOLUSDT", interval = "15m", limit = 400) {
-  const key = `${symbol.toUpperCase()}_${interval}_${limit}`;
-  const cached = candlesCache.get(key);
-  if (cached && Date.now() - cached.ts < 15_000) return cached.data; // 15s TTL
 
+async function fetchCandles(symbol = "SOLUSDT", interval = "15m", limit = 400) {
+  // ⚠️ Wichtig: Key ohne _${limit}, damit der WebSocket-Cache getroffen wird!
+  const key = `${symbol.toUpperCase()}_${interval}`;
+  const cached = candlesCache.get(key);
+  if (cached && Date.now() - cached.ts < 15_000) return cached.data; // WS-Cache nutzen
+
+  // Fallback: HTTP (wenn WS noch nicht geliefert hat)
   const { data } = await http.get("/api/v3/klines", {
     params: { symbol: symbol.toUpperCase(), interval, limit },
   });
@@ -274,6 +277,7 @@ async function fetchCandles(symbol = "SOLUSDT", interval = "15m", limit = 400) {
   candlesCache.set(key, { ts: Date.now(), data: out });
   return out;
 }
+
 async function fetchBookTicker(symbol = "SOLUSDT") {
   const s = symbol.toUpperCase();
   const cached = bookCache.get(s);
