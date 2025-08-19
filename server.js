@@ -653,7 +653,7 @@ router.post("/webhook", async (req, res) => {
     }
 
     // --- Pflichtfelder / Parsing ---
-    const side   = (pRaw.side || "").toLowerCase();                 // buy/sell
+    const side   = (pRaw.side || "").toLowerCase(); // buy/sell
     const symbol = (pRaw.symbol || "SOLUSDT").toUpperCase();
     const px     = Number(pRaw.px);
     let   sl     = pRaw.sl != null ? Number(pRaw.sl) : null;
@@ -686,7 +686,6 @@ router.post("/webhook", async (req, res) => {
     // --- Marktdaten & Indikatoren ---
     const [candles, book] = await Promise.all([
       fetchCandles(symbol, MARKET_INTERVAL, CANDLE_LIMIT),
-      // Binance-HTTP kann limitieren → kleiner Fallback um nicht zu crashen
       fetchBookTicker(symbol).catch(() => ({ bid: px * 0.999, ask: px * 1.001 }))
     ]);
 
@@ -700,7 +699,7 @@ router.post("/webhook", async (req, res) => {
     const spread = Math.max(0, (book.ask - book.bid));
     const mid    = (book.ask + book.bid) / 2;
 
-    // Paper-Trades mit aktuellem Mid-Preis prüfen
+    // Paper-Trades gegen aktuellen Mid prüfen
     settlePaperForSymbol(symbol, mid);
 
     const spreadBps = mid > 0 ? (spread / mid) * 1e4 : 9999;
@@ -731,7 +730,7 @@ router.post("/webhook", async (req, res) => {
       }
     }
 
-    // --- SL/TP Sanity (richtige Seite) ---
+    // --- SL/TP Sanity ---
     if (side === "buy") {
       if (!(sl < px && tp > px)) {
         const risk = Math.max(1e-9, (px - sl || senti.atr14 * ATR_MULT));
@@ -748,7 +747,7 @@ router.post("/webhook", async (req, res) => {
       }
     }
 
-    // --- RR prüfen/erzwingen (≥ MIN_RR) ---
+    // --- RR prüfen / ggf. TP nachziehen ---
     let rrNow = rr(px, sl, tp, side);
     let rrAdjusted = false;
     if (rrNow == null) {
@@ -827,10 +826,7 @@ router.post("/webhook", async (req, res) => {
       state.tradesRejected++;
       state.rejectReasons.set("DailyRiskBudget", (state.rejectReasons.get("DailyRiskBudget") || 0) + 1);
       logReject("DailyRiskBudget", { symbol, side });
-
-      // Telegram: Budget-Hit
       try { tg?.budgetHit?.({ riskUsedUsd: state.riskUsedUsd, tradeRiskUsd, limit: DAILY_RISK_BUDGET_USD }); } catch {}
-
       return res.json({
         ok: true,
         decision: "REJECT",
@@ -847,6 +843,8 @@ router.post("/webhook", async (req, res) => {
     if (!rrOK)    reasons.push(`RR<${MIN_RR}`);
     if (!trendOK) reasons.push("TrendMismatch");
     if (!rsiOK)   reasons.push("RSIContextBad");
+
+    const spreadBpsFixed = +spreadBps.toFixed(3);
 
     const payload = {
       ok: true,
@@ -866,7 +864,7 @@ router.post("/webhook", async (req, res) => {
       indicators: {
         ema50: senti.ema50, ema200: senti.ema200, rsi14: senti.rsi14,
         atr14: senti.atr14, zAtr: senti.zAtr, lastClose: senti.last,
-        spreadBps: +spreadBps.toFixed(3)
+        spreadBps: spreadBpsFixed
       },
       gates: { rrOK, trendOK, rsiOK },
       budgets: {
@@ -895,7 +893,6 @@ router.post("/webhook", async (req, res) => {
       state.paperWallet.openTrades.push(trade);
       console.log(`[PAPER] Opened ${side.toUpperCase()} ${symbol} @${entry} | SL ${slR} TP ${tpR}`);
 
-      // Telegram: ACCEPT
       try { tg?.tradeAccepted?.(payload.order, payload.indicators); } catch {}
     } else {
       state.tradesRejected++;
@@ -903,8 +900,6 @@ router.post("/webhook", async (req, res) => {
         state.rejectReasons.set(r, (state.rejectReasons.get(r) || 0) + 1);
       }
       logReject(`Decision=${payload.decision}`, { symbol, side });
-
-      // Telegram: REJECT (falls zu laut, diese Zeile entfernen)
       try { tg?.tradeRejected?.(payload.order, payload.reasonsRejected); } catch {}
     }
 
@@ -914,17 +909,17 @@ router.post("/webhook", async (req, res) => {
       side, symbol,
       entry, sl: slR, tp: tpR, rr: payload.order.rr,
       accept, reasons: payload.reasonsRejected,
-      spreadBps: payload.indicators.spreadBps,
-      zAtr: payload.indicators.zAtr
+      spreadBps: spreadBpsFixed,
+      zAtr: senti.zAtr
     });
 
     // Menschlich lesbares Einzeilen-Log
     if (LOG_DECISIONS) {
       const tag = accept ? "ACCEPT ✅" : "REJECT ❌";
-      const reasonTxt = payload.reasonsRejected.length ? ` | ${payload.reasonsRejected.join(",")}` : "";
+      const reasonTxt = reasons.length ? ` | ${reasons.join(",")}` : "";
       console.log(
         `[ACT] ${side.toUpperCase()} ${symbol} @${entry} | SL ${slR} TP ${tpR} | RR=${payload.order.rr} | ` +
-        `spread=${payload.indicators.spreadBps}bp zATR=${payload.indicators.zAtr?.toFixed?.(2) ?? 'na'} | ${tag}${reasonTxt}`
+        `spread=${spreadBpsFixed}bp zATR=${senti.zAtr?.toFixed?.(2) ?? 'na'} | ${tag}${reasonTxt}`
       );
     }
 
@@ -934,7 +929,6 @@ router.post("/webhook", async (req, res) => {
     return res.status(500).json({ ok: false, error: err.response?.data || err.message, version: VERSION });
   }
 });
-
 
 
     // --- Finale Entscheidung ---
