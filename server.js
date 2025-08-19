@@ -600,7 +600,6 @@ router.post("/debug/paper/reset", requireSecret, (req, res) => {
   }
 });
 
-
 // ===================== WEBHOOK CORE =====================
 router.post("/webhook", async (req, res) => {
   try {
@@ -609,13 +608,15 @@ router.post("/webhook", async (req, res) => {
     const pRaw = req.body || {};
 
     // --- Secret prüfen ---
-    const authHeader = req.get("authorization") || "";
-    const fromBearer = authHeader.toLowerCase().startsWith("bearer ")
-      ? authHeader.slice(7).trim() : "";
+    const authHeader  = req.get("authorization") || "";
+    const fromBearer  = authHeader.toLowerCase().startsWith("bearer ")
+      ? authHeader.slice(7).trim()
+      : "";
     const clientSecret = (
       (pRaw && pRaw.secret) ||
       req.get("x-tv-secret") ||
-      fromBearer || ""
+      fromBearer ||
+      ""
     ).toString().trim();
 
     if (!TV_SECRET) {
@@ -632,7 +633,7 @@ router.post("/webhook", async (req, res) => {
     }
 
     // --- PING / STATUS (frühe Rückgabe) ---
-    const cmd = (pRaw.cmd || "").toLowerCase();
+    const cmd        = (pRaw.cmd || "").toLowerCase();
     const reasonFlag = (pRaw.reason || "").toLowerCase();
     if (cmd === "ping" || cmd === "status" || reasonFlag === "ping" || reasonFlag === "status") {
       const symbolPing = (pRaw.symbol || "SOLUSDT").toUpperCase();
@@ -652,7 +653,7 @@ router.post("/webhook", async (req, res) => {
     }
 
     // --- Pflichtfelder / Parsing ---
-    const side   = (pRaw.side || "").toLowerCase();     // buy/sell
+    const side   = (pRaw.side || "").toLowerCase();                 // buy/sell
     const symbol = (pRaw.symbol || "SOLUSDT").toUpperCase();
     const px     = Number(pRaw.px);
     let   sl     = pRaw.sl != null ? Number(pRaw.sl) : null;
@@ -685,7 +686,8 @@ router.post("/webhook", async (req, res) => {
     // --- Marktdaten & Indikatoren ---
     const [candles, book] = await Promise.all([
       fetchCandles(symbol, MARKET_INTERVAL, CANDLE_LIMIT),
-      fetchBookTicker(symbol).catch(() => ({ bid: px * 0.999, ask: px * 1.001 })) // Fallback
+      // Binance-HTTP kann limitieren → kleiner Fallback um nicht zu crashen
+      fetchBookTicker(symbol).catch(() => ({ bid: px * 0.999, ask: px * 1.001 }))
     ]);
 
     const senti = sentimentScore(candles);
@@ -698,7 +700,7 @@ router.post("/webhook", async (req, res) => {
     const spread = Math.max(0, (book.ask - book.bid));
     const mid    = (book.ask + book.bid) / 2;
 
-    // Paper-Trades im Realtime-Preis prüfen
+    // Paper-Trades mit aktuellem Mid-Preis prüfen
     settlePaperForSymbol(symbol, mid);
 
     const spreadBps = mid > 0 ? (spread / mid) * 1e4 : 9999;
@@ -761,8 +763,8 @@ router.post("/webhook", async (req, res) => {
     }
 
     // --- Sentiment-Gates ---
-    const trendOK   = (side === "buy") ? senti.upTrend  : senti.downTrend;
-    const rsiOK     = (side === "buy") ? senti.rsiOKLong: senti.rsiOKShort;
+    const trendOK   = (side === "buy") ? senti.upTrend   : senti.downTrend;
+    const rsiOK     = (side === "buy") ? senti.rsiOKLong : senti.rsiOKShort;
     const rrOK      = rrNow >= MIN_RR;
 
     const passStrict  = rrOK && trendOK && rsiOK;
@@ -787,37 +789,46 @@ router.post("/webhook", async (req, res) => {
 
     // --- Sizing (Exchange-Filter) ---
     const filters = await fetchSymbolFilters(symbol);
-    const notionalTarget = Math.max(Number.isFinite(qtyUsd) ? qtyUsd : filters.minNotional, filters.minNotional);
-    let qty = notionalTarget / px;
+    const notionalTarget = Math.max(
+      Number.isFinite(qtyUsd) ? qtyUsd : filters.minNotional,
+      filters.minNotional
+    );
 
+    let qty = notionalTarget / px;
     if (filters.stepSize > 0) qty = floorToStep(qty, filters.stepSize);
     if (qty <= 0) {
       state.tradesRejected++;
       state.rejectReasons.set("QtyTooSmall", (state.rejectReasons.get("QtyTooSmall") || 0) + 1);
       logReject("QtyTooSmall", { symbol, side });
-      return res.json({ ok: true, decision: "REJECT", reason: "QtyTooSmall", step: filters.stepSize, minNotional: filters.minNotional });
+      return res.json({
+        ok: true,
+        decision: "REJECT",
+        reason: "QtyTooSmall",
+        step: filters.stepSize,
+        minNotional: filters.minNotional
+      });
     }
 
     let notional = qty * px;
     if (notional < filters.minNotional) {
-      qty = ceilToStep(filters.minNotional / px, (filters.stepSize || 0));
+      qty = ceilToStep(filters.minNotional / px, filters.stepSize || 0);
       notional = qty * px;
     }
 
-    const entry = filters.tickSize > 0 ? roundToStep(px, filters.tickSize) : px;
-    const slR   = filters.tickSize > 0 ? roundToStep(sl, filters.tickSize) : sl;
-    const tpR   = filters.tickSize > 0 ? roundToStep(tp, filters.tickSize) : tp;
+    const entry = filters.tickSize > 0 ? roundToStep(px,  filters.tickSize) : px;
+    const slR   = filters.tickSize > 0 ? roundToStep(sl,  filters.tickSize) : sl;
+    const tpR   = filters.tickSize > 0 ? roundToStep(tp,  filters.tickSize) : tp;
 
-    // --- Risiko berechnen (NEU/fix) ---
+    // --- Risk USD für Budget ---
     const riskPerUnit  = side === "buy" ? (entry - slR) : (slR - entry);
     const tradeRiskUsd = Math.max(0, riskPerUnit) * qty;
 
-    // --- Daily Risk Budget ---
     if (DAILY_RISK_BUDGET_USD > 0 && (state.riskUsedUsd + tradeRiskUsd) > DAILY_RISK_BUDGET_USD) {
       state.tradesRejected++;
       state.rejectReasons.set("DailyRiskBudget", (state.rejectReasons.get("DailyRiskBudget") || 0) + 1);
       logReject("DailyRiskBudget", { symbol, side });
 
+      // Telegram: Budget-Hit
       try { tg?.budgetHit?.({ riskUsedUsd: state.riskUsedUsd, tradeRiskUsd, limit: DAILY_RISK_BUDGET_USD }); } catch {}
 
       return res.json({
@@ -833,9 +844,9 @@ router.post("/webhook", async (req, res) => {
     // --- Finale Entscheidung ---
     const accept = acceptSenti;
     const reasons = [];
-    if (!rrOK)      reasons.push(`RR<${MIN_RR}`);
-    if (!trendOK)   reasons.push("TrendMismatch");
-    if (!rsiOK)     reasons.push("RSIContextBad");
+    if (!rrOK)    reasons.push(`RR<${MIN_RR}`);
+    if (!trendOK) reasons.push("TrendMismatch");
+    if (!rsiOK)   reasons.push("RSIContextBad");
 
     const payload = {
       ok: true,
@@ -846,8 +857,10 @@ router.post("/webhook", async (req, res) => {
       reasonsRejected: accept ? [] : reasons,
       order: {
         id, side, symbol,
-        entry, sl: slR, tp: tpR, rr: +rrNow.toFixed(3), rrAdjusted,
-        qty, notional: +(qty * entry).toFixed(4),
+        entry, sl: slR, tp: tpR,
+        rr: +rrNow.toFixed(3), rrAdjusted,
+        qty,
+        notional: +(qty * entry).toFixed(4),
         riskUsd: +tradeRiskUsd.toFixed(4)
       },
       indicators: {
@@ -875,13 +888,7 @@ router.post("/webhook", async (req, res) => {
 
       // === PAPER SIMULATION ===
       const trade = {
-        id,
-        side,
-        symbol,
-        entry,
-        sl: slR,
-        tp: tpR,
-        qty,
+        id, side, symbol, entry, sl: slR, tp: tpR, qty,
         notional: qty * entry,
         tsOpen: Date.now()
       };
@@ -897,11 +904,11 @@ router.post("/webhook", async (req, res) => {
       }
       logReject(`Decision=${payload.decision}`, { symbol, side });
 
-      // Telegram: REJECT (falls zu „laut“, diese Zeile entfernen)
+      // Telegram: REJECT (falls zu laut, diese Zeile entfernen)
       try { tg?.tradeRejected?.(payload.order, payload.reasonsRejected); } catch {}
     }
 
-    // --- Decision Buffer füllen
+    // Puffer füllen
     pushDecision({
       ts: payload.ts,
       side, symbol,
@@ -911,21 +918,23 @@ router.post("/webhook", async (req, res) => {
       zAtr: payload.indicators.zAtr
     });
 
-    // --- Menschliches Einzeilen-Log
+    // Menschlich lesbares Einzeilen-Log
     if (LOG_DECISIONS) {
       const tag = accept ? "ACCEPT ✅" : "REJECT ❌";
       const reasonTxt = payload.reasonsRejected.length ? ` | ${payload.reasonsRejected.join(",")}` : "";
       console.log(
-        `[ACT] ${side.toUpperCase()} ${symbol} @${entry} | SL ${slR} TP ${tpR} | RR=${payload.order.rr} | spread=${payload.indicators.spreadBps}bp zATR=${payload.indicators.zAtr?.toFixed?.(2) ?? 'na'} | ${tag}${reasonTxt}`
+        `[ACT] ${side.toUpperCase()} ${symbol} @${entry} | SL ${slR} TP ${tpR} | RR=${payload.order.rr} | ` +
+        `spread=${payload.indicators.spreadBps}bp zATR=${payload.indicators.zAtr?.toFixed?.(2) ?? 'na'} | ${tag}${reasonTxt}`
       );
     }
 
     return res.json(payload);
   } catch (err) {
-    console.error("[WEBHOOK] error", err.response?.data || err.message);
+    console.error("[WEBHOOK] error", err.response?.data || err.message || err);
     return res.status(500).json({ ok: false, error: err.response?.data || err.message, version: VERSION });
   }
 });
+
 
 
     // --- Finale Entscheidung ---
