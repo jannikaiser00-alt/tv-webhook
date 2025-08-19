@@ -68,14 +68,15 @@ function requireSecret(req, res, next) {
   }
   next();
 }
+
 // ===================== TELEGRAM (via ./telegram.js) =====================
+let tg = null;
 try {
-  const tg = require("./telegram.js/telegram.js");
+  tg = require("./telegram.js");
   console.log("[BOOT] Telegram module loaded successfully.");
 } catch (e) {
   console.error("[BOOT] Failed to load telegram.js:", e.message);
 }
-
 
 // ===================== HTTP CLIENT (mit Retry) =====================
 const http = axios.create({
