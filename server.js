@@ -917,13 +917,14 @@ router.post("/webhook", async (req, res) => {
     if (LOG_DECISIONS) {
       const tag = accept ? "ACCEPT ✅" : "REJECT ❌";
       const reasonTxt = reasons.length ? ` | ${reasons.join(",")}` : "";
-      console.log(
-        `[ACT] ${side.toUpperCase()} ${symbol} @${entry} | SL ${slR} TP ${tpR} | RR=${payload.order.rr} | ` +
-        `spread=${spreadBpsFixed}bp zATR=${senti.zAtr?.toFixed?.(2) ?? 'na'} | ${tag}${reasonTxt}`
-      );
-    }
-}
-    return res.json(payload);
+          console.log(
+      `[ACT] ${side.toUpperCase()} ${symbol} @${entry} | SL ${slR} TP ${tpR} | RR=${payload.order.rr} | ` +
+      `spread=${spreadBpsFixed}bp zATR=${senti.zAtr?.toFixed?.(2) ?? 'na'} | ${tag}${reasonTxt}`
+    );
+  } 
+  
+  return res.json(payload);
+
 } catch (err) {
   const status = err.response?.status || 500;
   const data   = err.response?.data || { message: err.message };
