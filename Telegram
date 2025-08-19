@@ -2,17 +2,13 @@
 "use strict";
 
 /**
- * Lightweight Telegram helper.
- * No-ops if TG_BOT_TOKEN or TG_CHAT_ID are missing.
- *
- * ENV:
- *   TG_BOT_TOKEN = 123456:ABC...
- *   TG_CHAT_ID   = -1001234567890  (oder deine User-ID)
+ * Telegram helper – fix für direkten Einsatz.
+ * Token & Chat-ID sind hier fest verdrahtet.
  */
 
 const https = require("https");
-const BOT = (process.env.TG_BOT_TOKEN || "").trim();
-const CHAT = (process.env.TG_CHAT_ID || "").trim();
+const BOT = "8421514020:AAH9zlKnmjJV300UVLV5Gl4onS1dTCxb2dg";
+const CHAT = "5415766197";
 
 // Small https JSON POST
 function postJSON(urlPath, payload) {
@@ -46,6 +42,7 @@ async function send(text, extra = {}) {
     disable_web_page_preview: true,
     ...extra,
   };
+  console.log("[TG] Sending to Telegram:", payload.text); // Optional Debug-Log
   return postJSON("/sendMessage", payload);
 }
 
@@ -100,4 +97,5 @@ module.exports = {
   budgetHit,
   tradeRejected,
 };
+
 
