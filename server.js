@@ -608,8 +608,8 @@ router.post("/webhook", async (req, res) => {
     const pRaw = req.body || {};
 
     // --- Secret prüfen ---
-    const authHeader  = req.get("authorization") || "";
-    const fromBearer  = authHeader.toLowerCase().startsWith("bearer ")
+    const authHeader = req.get("authorization") || "";
+    const fromBearer = authHeader.toLowerCase().startsWith("bearer ")
       ? authHeader.slice(7).trim()
       : "";
     const clientSecret = (
