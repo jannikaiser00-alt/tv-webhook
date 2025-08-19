@@ -697,8 +697,10 @@ router.post("/webhook", async (req, res) => {
     // --- Spread Gate ---
     const spread = Math.max(0, (book.ask - book.bid));
     const mid    = (book.ask + book.bid) / 2;
-    // Paper-Trades für dieses Symbol mit aktuellem Mid-Preis abgleichen
-settlePaperForSymbol(symbol, mid);
+
+    // Paper-Trades im Realtime-Preis prüfen
+    settlePaperForSymbol(symbol, mid);
+
     const spreadBps = mid > 0 ? (spread / mid) * 1e4 : 9999;
     if (spreadBps > SPREAD_MAX_BPS) {
       state.tradesRejected++;
@@ -798,7 +800,7 @@ settlePaperForSymbol(symbol, mid);
 
     let notional = qty * px;
     if (notional < filters.minNotional) {
-      qty = ceilToStep(filters.minNotional / px, filters.stepSize || 0);
+      qty = ceilToStep(filters.minNotional / px, (filters.stepSize || 0));
       notional = qty * px;
     }
 
@@ -806,23 +808,125 @@ settlePaperForSymbol(symbol, mid);
     const slR   = filters.tickSize > 0 ? roundToStep(sl, filters.tickSize) : sl;
     const tpR   = filters.tickSize > 0 ? roundToStep(tp, filters.tickSize) : tp;
 
-    const riskPerUnit   = side === "buy" ? (entry - slR) : (slR - entry);
-const tradeRiskUsd  = Math.max(0, riskPerUnit) * qty;
+    // --- Risiko berechnen (NEU/fix) ---
+    const riskPerUnit  = side === "buy" ? (entry - slR) : (slR - entry);
+    const tradeRiskUsd = Math.max(0, riskPerUnit) * qty;
 
+    // --- Daily Risk Budget ---
+    if (DAILY_RISK_BUDGET_USD > 0 && (state.riskUsedUsd + tradeRiskUsd) > DAILY_RISK_BUDGET_USD) {
+      state.tradesRejected++;
+      state.rejectReasons.set("DailyRiskBudget", (state.rejectReasons.get("DailyRiskBudget") || 0) + 1);
+      logReject("DailyRiskBudget", { symbol, side });
 
-  if (DAILY_RISK_BUDGET_USD > 0 && (state.riskUsedUsd + tradeRiskUsd) > DAILY_RISK_BUDGET_USD) {
-  state.tradesRejected++;
-  state.rejectReasons.set("DailyRiskBudget", (state.rejectReasons.get("DailyRiskBudget") || 0) + 1);
-  logReject("DailyRiskBudget", { symbol, side });
+      try { tg?.budgetHit?.({ riskUsedUsd: state.riskUsedUsd, tradeRiskUsd, limit: DAILY_RISK_BUDGET_USD }); } catch {}
 
-  // Telegram: Budget-Hit
-  try { tg?.budgetHit?.({ riskUsedUsd: state.riskUsedUsd, tradeRiskUsd, limit: DAILY_RISK_BUDGET_USD }); } catch {}
+      return res.json({
+        ok: true,
+        decision: "REJECT",
+        reason: "DailyRiskBudget",
+        riskUsedUsd: state.riskUsedUsd,
+        tradeRiskUsd,
+        limit: DAILY_RISK_BUDGET_USD
+      });
+    }
 
-  return res.json({
-    ok: true, decision: "REJECT", reason: "DailyRiskBudget",
-    riskUsedUsd: state.riskUsedUsd, tradeRiskUsd, limit: DAILY_RISK_BUDGET_USD
-  });
-}
+    // --- Finale Entscheidung ---
+    const accept = acceptSenti;
+    const reasons = [];
+    if (!rrOK)      reasons.push(`RR<${MIN_RR}`);
+    if (!trendOK)   reasons.push("TrendMismatch");
+    if (!rsiOK)     reasons.push("RSIContextBad");
+
+    const payload = {
+      ok: true,
+      decision: accept ? "ACCEPT" : "REJECT",
+      wouldPlace: accept,
+      action: accept ? "PLACE_ORDER" : "SKIP",
+      mode: SENTI_MODE,
+      reasonsRejected: accept ? [] : reasons,
+      order: {
+        id, side, symbol,
+        entry, sl: slR, tp: tpR, rr: +rrNow.toFixed(3), rrAdjusted,
+        qty, notional: +(qty * entry).toFixed(4),
+        riskUsd: +tradeRiskUsd.toFixed(4)
+      },
+      indicators: {
+        ema50: senti.ema50, ema200: senti.ema200, rsi14: senti.rsi14,
+        atr14: senti.atr14, zAtr: senti.zAtr, lastClose: senti.last,
+        spreadBps: +spreadBps.toFixed(3)
+      },
+      gates: { rrOK, trendOK, rsiOK },
+      budgets: {
+        dayKey: state.dayKey,
+        riskUsedUsd: +state.riskUsedUsd.toFixed(2),
+        maxTrades: MAX_TRADES_PER_DAY,
+        tradesAccepted: state.tradesAccepted,
+        tradesRejected: state.tradesRejected
+      },
+      version: VERSION,
+      ts: Date.now()
+    };
+
+    // --- Accounting / State Update + Decision Log ---
+    if (accept) {
+      state.tradesAccepted++;
+      state.riskUsedUsd += tradeRiskUsd;
+      logAccept({ symbol, side, entry, sl: slR, tp: tpR, rr: payload.order.rr });
+
+      // === PAPER SIMULATION ===
+      const trade = {
+        id,
+        side,
+        symbol,
+        entry,
+        sl: slR,
+        tp: tpR,
+        qty,
+        notional: qty * entry,
+        tsOpen: Date.now()
+      };
+      state.paperWallet.openTrades.push(trade);
+      console.log(`[PAPER] Opened ${side.toUpperCase()} ${symbol} @${entry} | SL ${slR} TP ${tpR}`);
+
+      // Telegram: ACCEPT
+      try { tg?.tradeAccepted?.(payload.order, payload.indicators); } catch {}
+    } else {
+      state.tradesRejected++;
+      for (const r of payload.reasonsRejected) {
+        state.rejectReasons.set(r, (state.rejectReasons.get(r) || 0) + 1);
+      }
+      logReject(`Decision=${payload.decision}`, { symbol, side });
+
+      // Telegram: REJECT (falls zu „laut“, diese Zeile entfernen)
+      try { tg?.tradeRejected?.(payload.order, payload.reasonsRejected); } catch {}
+    }
+
+    // --- Decision Buffer füllen
+    pushDecision({
+      ts: payload.ts,
+      side, symbol,
+      entry, sl: slR, tp: tpR, rr: payload.order.rr,
+      accept, reasons: payload.reasonsRejected,
+      spreadBps: payload.indicators.spreadBps,
+      zAtr: payload.indicators.zAtr
+    });
+
+    // --- Menschliches Einzeilen-Log
+    if (LOG_DECISIONS) {
+      const tag = accept ? "ACCEPT ✅" : "REJECT ❌";
+      const reasonTxt = payload.reasonsRejected.length ? ` | ${payload.reasonsRejected.join(",")}` : "";
+      console.log(
+        `[ACT] ${side.toUpperCase()} ${symbol} @${entry} | SL ${slR} TP ${tpR} | RR=${payload.order.rr} | spread=${payload.indicators.spreadBps}bp zATR=${payload.indicators.zAtr?.toFixed?.(2) ?? 'na'} | ${tag}${reasonTxt}`
+      );
+    }
+
+    return res.json(payload);
+  } catch (err) {
+    console.error("[WEBHOOK] error", err.response?.data || err.message);
+    return res.status(500).json({ ok: false, error: err.response?.data || err.message, version: VERSION });
+  }
+});
+
 
     // --- Finale Entscheidung ---
     const accept = acceptSenti;
