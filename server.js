@@ -926,107 +926,12 @@ router.post("/webhook", async (req, res) => {
     return res.json(payload);
   } catch (err) {
     console.error("[WEBHOOK] error", err.response?.data || err.message || err);
-    return res.status(500).json({ ok: false, error: err.response?.data || err.message, version: VERSION });
+    return res
+      .status(500)
+      .json({ ok: false, error: err.response?.data || err.message, version: VERSION });
   }
 });
 
-
-    // --- Finale Entscheidung ---
-    const accept = acceptSenti;
-    const reasons = [];
-    if (!rrOK)      reasons.push(`RR<${MIN_RR}`);
-    if (!trendOK)   reasons.push("TrendMismatch");
-    if (!rsiOK)     reasons.push("RSIContextBad");
-
-    const payload = {
-      ok: true,
-      decision: accept ? "ACCEPT" : "REJECT",
-      wouldPlace: accept,
-      action: accept ? "PLACE_ORDER" : "SKIP",
-      mode: SENTI_MODE,
-      reasonsRejected: accept ? [] : reasons,
-      order: {
-        id, side, symbol,
-        entry, sl: slR, tp: tpR, rr: +rrNow.toFixed(3), rrAdjusted,
-        qty, notional: +(qty * entry).toFixed(4),
-        riskUsd: +tradeRiskUsd.toFixed(4)
-      },
-      indicators: {
-        ema50: senti.ema50, ema200: senti.ema200, rsi14: senti.rsi14,
-        atr14: senti.atr14, zAtr: senti.zAtr, lastClose: senti.last,
-        spreadBps: +spreadBps.toFixed(3)
-      },
-      gates: { rrOK, trendOK, rsiOK },
-      budgets: {
-        dayKey: state.dayKey,
-        riskUsedUsd: +state.riskUsedUsd.toFixed(2),
-        maxTrades: MAX_TRADES_PER_DAY,
-        tradesAccepted: state.tradesAccepted,
-        tradesRejected: state.tradesRejected
-      },
-      version: VERSION,
-      ts: Date.now()
-    };
-
-   // --- Accounting / State Update + Decision Log ---
-if (accept) {
-  state.tradesAccepted++;
-  state.riskUsedUsd += tradeRiskUsd;
-  logAccept({ symbol, side, entry, sl: slR, tp: tpR, rr: payload.order.rr });
-
-  // === PAPER SIMULATION ===
-  const trade = {
-    id,
-    side,
-    symbol,
-    entry,
-    sl: slR,
-    tp: tpR,
-    qty,
-    notional: qty * entry,
-    tsOpen: Date.now()
-  };
-  state.paperWallet.openTrades.push(trade);
-  console.log(`[PAPER] Opened ${side.toUpperCase()} ${symbol} @${entry} | SL ${slR} TP ${tpR}`);
-
-  // Telegram: ACCEPT
-  try { tg?.tradeAccepted?.(payload.order, payload.indicators); } catch {}
-} else {
-  state.tradesRejected++;
-  for (const r of payload.reasonsRejected) {
-    state.rejectReasons.set(r, (state.rejectReasons.get(r) || 0) + 1);
-  }
-  logReject(`Decision=${payload.decision}`, { symbol, side });
-
-  // Optional: REJECT (falls zu „laut“, einfach diese Zeile löschen)
-  try { tg?.tradeRejected?.(payload.order, payload.reasonsRejected); } catch {}
-}
-
-    // Puffer füllen
-    pushDecision({
-      ts: payload.ts,
-      side, symbol,
-      entry, sl: slR, tp: tpR, rr: payload.order.rr,
-      accept, reasons: payload.reasonsRejected,
-      spreadBps: payload.indicators.spreadBps,
-      zAtr: payload.indicators.zAtr
-    });
-
-    // Menschlich lesbares Einzeilen-Log
-    if (LOG_DECISIONS) {
-      const tag = accept ? "ACCEPT ✅" : "REJECT ❌";
-      const reasonTxt = payload.reasonsRejected.length ? ` | ${payload.reasonsRejected.join(",")}` : "";
-      console.log(
-        `[ACT] ${side.toUpperCase()} ${symbol} @${entry} | SL ${slR} TP ${tpR} | RR=${payload.order.rr} | spread=${payload.indicators.spreadBps}bp zATR=${payload.indicators.zAtr?.toFixed?.(2) ?? 'na'} | ${tag}${reasonTxt}`
-      );
-    }
-
-    return res.json(payload);
-  } catch (err) {
-    console.error("[WEBHOOK] error", err.response?.data || err.message);
-    return res.status(500).json({ ok: false, error: err.response?.data || err.message, version: VERSION });
-  }
-});
 
 // Global error handler (ganz am Ende platzieren!)
 router.use((err, req, res, next) => {
