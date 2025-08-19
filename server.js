@@ -924,14 +924,12 @@ router.post("/webhook", async (req, res) => {
     }
 
     return res.json(payload);
-  } catch (err) {
-    console.error("[WEBHOOK] error", err.response?.data || err.message || err);
-    return res
-      .status(500)
-      .json({ ok: false, error: err.response?.data || err.message, version: VERSION });
-  }
-});
-
+} catch (err) {
+  const status = err.response?.status || 500;
+  const data   = err.response?.data || { message: err.message };
+  console.error("[WEBHOOK] error", status, data);
+  return res.status(status).json({ ok: false, error: data, version: VERSION });
+}
 
 // Global error handler (ganz am Ende platzieren!)
 router.use((err, req, res, next) => {
