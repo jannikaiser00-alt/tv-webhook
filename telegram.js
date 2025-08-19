@@ -1,0 +1,99 @@
+// telegram.js
+"use strict";
+
+/**
+ * Telegram helper – fix für direkten Einsatz.
+ * Token & Chat-ID sind hier fest verdrahtet.
+ */
+
+const https = require("https");
+const BOT = "8421514020:AAH9zlKnmjJV300UVLV5Gl4onS1dTCxb2dg";
+const CHAT = "5415766197";
+
+// Small https JSON POST
+function postJSON(urlPath, payload) {
+  return new Promise((resolve) => {
+    if (!BOT || !CHAT) return resolve({ ok: false, skipped: "no_token_or_chat" });
+    const data = Buffer.from(JSON.stringify(payload));
+    const req = https.request({
+      method: "POST",
+      host: "api.telegram.org",
+      path: `/bot${BOT}${urlPath}`,
+      headers: {
+        "Content-Type": "application/json",
+        "Content-Length": data.length,
+      },
+    }, (res) => {
+      res.resume(); // drain
+      resolve({ ok: res.statusCode >= 200 && res.statusCode < 300, status: res.statusCode });
+    });
+    req.on("error", () => resolve({ ok: false }));
+    req.write(data);
+    req.end();
+  });
+}
+
+async function send(text, extra = {}) {
+  if (!BOT || !CHAT) return { ok: false, skipped: true };
+  const payload = {
+    chat_id: CHAT,
+    text,
+    parse_mode: "HTML",
+    disable_web_page_preview: true,
+    ...extra,
+  };
+  console.log("[TG] Sending to Telegram:", payload.text); // Optional Debug-Log
+  return postJSON("/sendMessage", payload);
+}
+
+// --------- Public helpers ---------
+function wsUp(streams) {
+  return send(`🟢 <b>WS up</b>\n<code>${streams}</code>`);
+}
+function wsDown() {
+  return send(`🔴 <b>WS down</b> (reconnect pending)`);
+}
+function tradeAccepted(o, indic) {
+  const lines = [
+    `✅ <b>ACCEPT ${o.side.toUpperCase()} ${o.symbol}</b>`,
+    `Entry: <code>${o.entry}</code> | SL: <code>${o.sl}</code> | TP: <code>${o.tp}</code>`,
+    `Qty: <code>${o.qty}</code> | Notional: <code>${o.notional}</code> USD`,
+    `RR: <code>${o.rr}</code>`,
+  ];
+  if (indic?.spreadBps != null) lines.push(`Spread: <code>${indic.spreadBps} bps</code>`);
+  return send(lines.join("\n"));
+}
+function tradeClosed(t) {
+  const icon = t.reason === "TP" ? "🎯" : "🛑";
+  const pnl  = (t.pnl >= 0 ? "＋" : "－") + Math.abs(t.pnl).toFixed(2);
+  const lines = [
+    `${icon} <b>CLOSE ${t.side.toUpperCase()} ${t.symbol}</b> (${t.reason})`,
+    `Entry: <code>${t.entry}</code> → Exit: <code>${t.exit}</code>`,
+    `Qty: <code>${t.qty}</code> | PnL: <code>${pnl} USD</code>`,
+  ];
+  return send(lines.join("\n"));
+}
+function budgetHit(ctx) {
+  const lines = [
+    `⚠️ <b>Daily Risk Budget</b> hit`,
+    `Used: <code>${ctx.riskUsedUsd.toFixed(2)}</code> | This trade risk: <code>${ctx.tradeRiskUsd.toFixed(2)}</code> | Limit: <code>${ctx.limit}</code>`,
+  ];
+  return send(lines.join("\n"));
+}
+function tradeRejected(o, reasons = []) {
+  const lines = [
+    `❌ <b>REJECT ${o.side?.toUpperCase?.() || "?"} ${o.symbol || ""}</b>`,
+    `Entry: <code>${o.entry}</code> | SL: <code>${o.sl}</code> | TP: <code>${o.tp}</code>`,
+  ];
+  if (reasons.length) lines.push(`Reasons: <code>${reasons.join(",")}</code>`);
+  return send(lines.join("\n"));
+}
+
+module.exports = {
+  wsUp,
+  wsDown,
+  tradeAccepted,
+  tradeClosed,
+  budgetHit,
+  tradeRejected,
+};
