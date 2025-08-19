@@ -913,24 +913,24 @@ router.post("/webhook", async (req, res) => {
       zAtr: senti.zAtr
     });
 
-    // Menschlich lesbares Einzeilen-Log
+      // Menschlich lesbares Einzeilen-Log
     if (LOG_DECISIONS) {
       const tag = accept ? "ACCEPT ✅" : "REJECT ❌";
       const reasonTxt = reasons.length ? ` | ${reasons.join(",")}` : "";
-          console.log(
-      `[ACT] ${side.toUpperCase()} ${symbol} @${entry} | SL ${slR} TP ${tpR} | RR=${payload.order.rr} | ` +
-      `spread=${spreadBpsFixed}bp zATR=${senti.zAtr?.toFixed?.(2) ?? 'na'} | ${tag}${reasonTxt}`
-    );
-  } 
-  
-  return res.json(payload);
+      console.log(
+        `[ACT] ${side.toUpperCase()} ${symbol} @${entry} | SL ${slR} TP ${tpR} | RR=${payload.order.rr} | ` +
+        `spread=${spreadBpsFixed}bp zATR=${senti.zAtr?.toFixed?.(2) ?? 'na'} | ${tag}${reasonTxt}`
+      );
+    }
 
-} catch (err) {
-  const status = err.response?.status || 500;
-  const data   = err.response?.data || { message: err.message };
-  console.error("[WEBHOOK] error", status, data);
-  return res.status(status).json({ ok: false, error: data, version: VERSION });
-}
+    return res.json(payload);
+  } catch (err) {
+    const status = err.response?.status || 500;
+    const data   = err.response?.data || { message: err.message };
+    console.error("[WEBHOOK] error", status, data);
+    return res.status(status).json({ ok: false, error: data, version: VERSION });
+  }
+});
 
 // Global error handler (ganz am Ende platzieren!)
 router.use((err, req, res, next) => {
