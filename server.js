@@ -922,7 +922,7 @@ router.post("/webhook", async (req, res) => {
         `spread=${spreadBpsFixed}bp zATR=${senti.zAtr?.toFixed?.(2) ?? 'na'} | ${tag}${reasonTxt}`
       );
     }
-
+}
     return res.json(payload);
 } catch (err) {
   const status = err.response?.status || 500;
