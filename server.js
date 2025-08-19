@@ -69,13 +69,11 @@ function requireSecret(req, res, next) {
   next();
 }
 // ===================== TELEGRAM (via ./telegram) =====================
-let tg;
 try {
-  tg = require("./telegram");
-  console.log("[BOOT] Telegram module loaded.");
+  const tg = require("./Telegram/telegram");
+  console.log("[BOOT] Telegram module loaded successfully.");
 } catch (e) {
   console.error("[BOOT] Failed to load telegram.js:", e.message);
-  tg = null;
 }
 
 
